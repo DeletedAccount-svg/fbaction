@@ -2,7 +2,7 @@ name: Daily AI News Post to Facebook
 
 on:
   schedule:
-    - cron: '0 9 * * *'  # Every day at 9:00 AM UTC (5PM Manila / 2AM EST)
+    - cron: '0 23 * * *'  # Every day at 11PM UTC = 7AM Manila (GMT+8)
   workflow_dispatch:       # Also allow manual trigger anytime
 
 jobs:
