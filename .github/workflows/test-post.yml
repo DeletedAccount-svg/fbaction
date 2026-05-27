@@ -1,0 +1,46 @@
+name: Test Facebook Post
+
+on:
+  workflow_dispatch:  # Manual trigger only!
+    inputs:
+      message:
+        description: 'Test message to post'
+        required: true
+        default: 'Hello Facebook! 🪨 This is a test post from GitHub Actions!'
+
+jobs:
+  test-post:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install requests
+        run: pip install requests
+
+      - name: Post test message
+        env:
+          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+          FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
+        run: |
+          python -c "
+          import requests, os
+          page_id = os.environ['FB_PAGE_ID']
+          token = os.environ['FB_ACCESS_TOKEN']
+          url = f'https://graph.facebook.com/v19.0/{page_id}/feed'
+          resp = requests.post(url, data={
+              'message': '${{ github.event.inputs.message }}',
+              'access_token': token
+          })
+          result = resp.json()
+          print(result)
+          if 'id' in result:
+              print('UGH! SUCCESS! Post ID:', result[\"id\"])
+          else:
+              raise Exception(f'FAIL: {result}')
+          "
