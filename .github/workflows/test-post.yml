@@ -6,7 +6,7 @@ on:
       message:
         description: 'Test message to post'
         required: true
-        default: 'Hello Facebook! 🪨 This is a test post from GitHub Actions!'
+        default: 'AI is coming so fast!'
 
 jobs:
   test-post:
