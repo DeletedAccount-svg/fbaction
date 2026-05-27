@@ -1,0 +1,38 @@
+name: Daily AI News Post to Facebook
+
+on:
+  schedule:
+    - cron: '0 9 * * *'  # Every day at 9:00 AM UTC (5PM Manila / 2AM EST)
+  workflow_dispatch:       # Also allow manual trigger anytime
+
+jobs:
+  post-ai-news:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Needed to save posted_urls.json back to repo
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Fetch and post AI news to Facebook
+        env:
+          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+          FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
+        run: python fetch_and_post.py
+
+      - name: Save posted URLs back to repo
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add posted_urls.json
+          git diff --staged --quiet || git commit -m "chore: track posted URL [skip ci]"
+          git push
