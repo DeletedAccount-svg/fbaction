@@ -1,0 +1,27 @@
+name: Daily Facebook Post
+
+on:
+  schedule:
+    - cron: '0 9 * * *'  # Every day, when sun rise (9 AM UTC)
+  workflow_dispatch:       # Also can run by hand!
+
+jobs:
+  post-blog:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout cave drawings (code)
+        uses: actions/checkout@v4
+
+      - name: Setup Python fire magic
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install tools
+        run: pip install requests
+
+      - name: Post to Facebook Page
+        env:
+          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+          FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
+        run: python post_to_facebook.py
