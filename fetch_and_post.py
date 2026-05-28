@@ -2,11 +2,12 @@ import requests
 import os
 import json
 import xml.etree.ElementTree as ET
-import urllib.parse
 from datetime import datetime
 
 PAGE_ID = os.environ["FB_PAGE_ID"]
 ACCESS_TOKEN = os.environ["FB_ACCESS_TOKEN"]
+GROQ_API_KEY = os.environ["GROQ_API_KEY"]
+HF_API_KEY = os.environ["HF_API_KEY"]
 
 RSS_FEEDS = [
     "https://www.artificialintelligence-news.com/feed/",
@@ -101,58 +102,112 @@ What do you think about this? Drop your thoughts below! 👇
     return caption
 
 
-def generate_image(title):
-    """Generate an AI image using Pollinations.ai — free, no API key needed!"""
-    print("  Generating image with Pollinations.ai...")
-
-    prompt = (
-        f"futuristic AI technology illustration inspired by: {title}, "
-        "digital art, vibrant neon colors, modern tech aesthetic, "
-        "clean professional design, no text, widescreen"
-    )
-    encoded_prompt = urllib.parse.quote(prompt)
-    seed = abs(hash(title)) % 99999
-
-    image_url = (
-        f"https://image.pollinations.ai/prompt/{encoded_prompt}"
-        f"?width=1200&height=630&nologo=true&seed={seed}"
-    )
-
+def generate_image_prompt(title, summary):
+    """Use Groq to generate a highly relevant image prompt based on article."""
+    print("Generating smart image prompt with Groq...")
     try:
-        resp = requests.get(image_url, timeout=60)
+        headers = {
+            "Authorization": f"Bearer {GROQ_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        body = {
+            "model": "llama3-8b-8192",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert at writing Stable Diffusion image prompts. "
+                        "Given a news article title and summary, write a vivid, specific, photorealistic image prompt "
+                        "that visually represents the topic. Keep it under 60 words. "
+                        "No text, no logos, no words in image. Focus on the scene, objects, mood."
+                    )
+                },
+                {
+                    "role": "user",
+                    "content": f"Article title: {title}\nSummary: {summary[:300]}\n\nWrite a detailed image prompt:"
+                }
+            ],
+            "max_tokens": 120,
+            "temperature": 0.7
+        }
+        resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=body, timeout=20)
         resp.raise_for_status()
-        print(f"  Image generated! ({len(resp.content) // 1024} KB)")
-        return resp.content
+        prompt = resp.json()["choices"][0]["message"]["content"].strip()
+        print(f"  Groq prompt: {prompt}")
+        return prompt
     except Exception as e:
-        print(f"  Image generation failed: {e}")
-        return None
+        print(f"  Groq error: {e}")
+        # Fallback prompt
+        return f"futuristic technology concept, artificial intelligence, digital innovation, cinematic lighting, photorealistic"
 
 
-def post_to_facebook(caption, image_data=None):
-    if image_data:
-        # Post with image using /photos endpoint
-        print("  Posting with image...")
-        url = f"https://graph.facebook.com/v19.0/{PAGE_ID}/photos"
-        payload = {
-            "caption": caption,
-            "access_token": ACCESS_TOKEN,
+def generate_image(prompt):
+    """Use HuggingFace Inference API to generate image from prompt."""
+    print("Generating image with HuggingFace...")
+    model = "stabilityai/stable-diffusion-xl-base-1.0"
+    api_url = f"https://api-inference.huggingface.co/models/{model}"
+    headers = {"Authorization": f"Bearer {HF_API_KEY}"}
+    payload = {
+        "inputs": prompt,
+        "parameters": {
+            "width": 1024,
+            "height": 576,
+            "num_inference_steps": 30,
+            "guidance_scale": 7.5
         }
-        files = {"source": ("image.jpg", image_data, "image/jpeg")}
-        response = requests.post(url, data=payload, files=files)
-    else:
-        # Fallback: text-only post
-        print("  Posting text only (no image)...")
-        url = f"https://graph.facebook.com/v19.0/{PAGE_ID}/feed"
-        payload = {
-            "message": caption,
-            "access_token": ACCESS_TOKEN,
-        }
-        response = requests.post(url, data=payload)
+    }
 
+    for attempt in range(3):
+        try:
+            resp = requests.post(api_url, headers=headers, json=payload, timeout=120)
+            if resp.status_code == 503:
+                import time
+                wait = 30
+                print(f"  Model loading, waiting {wait}s... (attempt {attempt+1}/3)")
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            image_bytes = resp.content
+            with open("/tmp/post_image.jpg", "wb") as f:
+                f.write(image_bytes)
+            print("  Image saved!")
+            return "/tmp/post_image.jpg"
+        except Exception as e:
+            print(f"  HuggingFace attempt {attempt+1} error: {e}")
+            if attempt == 2:
+                return None
+
+    return None
+
+
+def post_to_facebook_with_image(message, image_path):
+    """Post image + caption to Facebook page."""
+    print("Posting to Facebook with image...")
+    url = f"https://graph.facebook.com/v19.0/{PAGE_ID}/photos"
+    with open(image_path, "rb") as img:
+        response = requests.post(
+            url,
+            data={"caption": message, "access_token": ACCESS_TOKEN},
+            files={"source": img}
+        )
     result = response.json()
-
     if "id" in result:
-        print(f"SUCCESS! Post ID: {result['id']}")
+        print(f"SUCCESS with image! Post ID: {result['id']}")
+        return True
+    else:
+        print(f"ERROR posting with image: {result}")
+        raise Exception(f"Post with image failed: {result}")
+
+
+def post_to_facebook_text_only(message):
+    """Fallback: post text only."""
+    print("Posting to Facebook (text only fallback)...")
+    url = f"https://graph.facebook.com/v19.0/{PAGE_ID}/feed"
+    payload = {"message": message, "access_token": ACCESS_TOKEN}
+    response = requests.post(url, data=payload)
+    result = response.json()
+    if "id" in result:
+        print(f"SUCCESS text-only! Post ID: {result['id']}")
         return True
     else:
         print(f"ERROR: {result}")
@@ -183,8 +238,19 @@ if __name__ == "__main__":
     print(f"Posting: {article['title']}")
 
     caption = make_caption(article)
-    image_data = generate_image(article["title"])
-    post_to_facebook(caption, image_data)
+
+    # Step 1: Groq generates a smart relevant image prompt
+    image_prompt = generate_image_prompt(article["title"], article.get("summary", ""))
+
+    # Step 2: HuggingFace generates the actual image
+    image_path = generate_image(image_prompt)
+
+    # Step 3: Post to Facebook
+    if image_path:
+        post_to_facebook_with_image(caption, image_path)
+    else:
+        print("Image generation failed, falling back to text-only post.")
+        post_to_facebook_text_only(caption)
 
     posted.append(article["url"])
     save_posted(posted)
