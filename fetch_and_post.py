@@ -181,8 +181,13 @@ def groq_generate_caption_and_prompt(title, article_text, source="Google News"):
                         "   - Blank line\n"
                         f"   - '📰 {source_credit}' on its own line (source credit).\n"
                         "   - '💡 Follow AI Academy @ ranksorcery.com for daily AI insights!' on its own line.\n"
+                        "   - Blank line\n"
+                        "   - A 3–4 sentence CTA block: Tell readers that this entire post — the news, the image, "
+                        "the caption, the hashtags — was created and published AUTOMATICALLY by AI with zero manual effort. "
+                        "Build curiosity and excitement about automation. End with exactly this line: "
+                        "'💬 Want to automate your Facebook page just like this? Type HOW in the comments and we'll show you how it's done!'\n"
                         "   - 6–8 relevant hashtags on the last line.\n"
-                        "   Total length: 250–350 words.\n\n"
+                        "   Total length: 280–380 words.\n\n"
 
                         "3. 'image_prompt' — A vivid, cinematic Stable Diffusion prompt that visually represents "
                         "the article topic. Describe specific objects, lighting, environment, and mood. "
@@ -204,7 +209,7 @@ def groq_generate_caption_and_prompt(title, article_text, source="Google News"):
                     )
                 }
             ],
-            "max_tokens": 900,
+            "max_tokens": 1200,
             "temperature": 0.80
         }
         resp = requests.post(
@@ -250,6 +255,12 @@ def groq_generate_caption_and_prompt(title, article_text, source="Google News"):
         f"How do you think this development will change your daily life or your industry?\n"
         f"{source_line}\n\n"
         f"💡 Follow AI Academy @ ranksorcery.com for daily AI insights!\n\n"
+        f"🤖 Here's something wild — this entire post was created and published automatically by AI. "
+        f"No human wrote this caption, picked this image, or hit the post button. "
+        f"Every single element — the news, the AI-generated visual, the caption, and the hashtags — "
+        f"was handled end-to-end by an automated system running quietly in the background. "
+        f"Imagine having a system like this working for YOUR page 24/7, posting quality content while you sleep.\n\n"
+        f"💬 Want to automate your Facebook page just like this? Type HOW in the comments and we'll show you how it's done!\n\n"
         f"#AIAutomation #ArtificialIntelligence #AINews #MachineLearning #FutureOfAI #AIDaily #TechNews"
     )
     headline = title[:60].upper()
