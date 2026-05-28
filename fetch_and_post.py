@@ -1,6 +1,7 @@
 import requests
 import os
 import json
+import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
 import urllib.parse
@@ -9,13 +10,8 @@ PAGE_ID = os.environ["FB_PAGE_ID"]
 ACCESS_TOKEN = os.environ["FB_ACCESS_TOKEN"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 
-RSS_FEEDS = [
-    "https://www.artificialintelligence-news.com/feed/",
-    "https://venturebeat.com/category/ai/feed/",
-    "https://techcrunch.com/tag/artificial-intelligence/feed/",
-    "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml",
-    "https://www.marktechpost.com/feed/",
-]
+# Google News RSS - trending AI news
+GOOGLE_NEWS_RSS = "https://news.google.com/rss/search?q=artificial+intelligence&hl=en-US&gl=US&ceid=US:en"
 
 POSTED_FILE = "posted_urls.json"
 
@@ -32,138 +28,181 @@ def save_posted(posted):
         json.dump(posted[-200:], f, indent=2)
 
 
-def fetch_articles(feed_url):
+def clean_html(text):
+    text = re.sub(r"<[^>]+>", "", text or "")
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def fetch_google_news():
+    """Fetch trending AI news from Google News RSS."""
     articles = []
+    print("Fetching from Google News RSS...")
     try:
-        resp = requests.get(feed_url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        resp = requests.get(
+            GOOGLE_NEWS_RSS,
+            timeout=20,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+        )
         resp.raise_for_status()
         root = ET.fromstring(resp.content)
-
-        if "atom" in root.tag.lower():
-            ns = "{http://www.w3.org/2005/Atom}"
-            for entry in root.findall(f"{ns}entry"):
-                title_el = entry.find(f"{ns}title")
-                summary_el = entry.find(f"{ns}summary")
-                link_el = entry.find(f"{ns}link")
+        channel = root.find("channel")
+        if channel is not None:
+            for item in channel.findall("item"):
+                title_el = item.find("title")
+                link_el = item.find("link")
+                desc_el = item.find("description")
+                source_el = item.find("source")
                 if title_el is not None and link_el is not None:
+                    title = clean_html(title_el.text or "")
+                    # Google News titles include source like "Title - Source"
+                    # Remove the " - Source" part at the end
+                    title = re.sub(r"\s*-\s*[^-]+$", "", title).strip()
                     articles.append({
-                        "title": (title_el.text or "").strip(),
-                        "summary": (summary_el.text or "").strip() if summary_el is not None else "",
-                        "url": link_el.get("href", "").strip(),
+                        "title": title,
+                        "url": (link_el.text or "").strip(),
+                        "description": clean_html(desc_el.text or "") if desc_el is not None else "",
+                        "source": source_el.text if source_el is not None else "Google News"
                     })
-        else:
-            channel = root.find("channel")
-            if channel is not None:
-                for item in channel.findall("item"):
-                    title_el = item.find("title")
-                    link_el = item.find("link")
-                    desc_el = item.find("description")
-                    if title_el is not None and link_el is not None:
-                        articles.append({
-                            "title": (title_el.text or "").strip(),
-                            "summary": (desc_el.text or "").strip() if desc_el is not None else "",
-                            "url": (link_el.text or "").strip(),
-                        })
-
     except Exception as e:
-        print(f"  Feed error ({feed_url}): {e}")
-
+        print(f"Google News fetch error: {e}")
+    print(f"  Got {len(articles)} articles from Google News")
     return articles
 
 
-def clean_html(text):
-    import re
-    text = re.sub(r"<[^>]+>", "", text)
-    text = re.sub(r"http\S+", "", text)
-    text = text.strip()
-    return text
+def fetch_article_content(url):
+    """Try to fetch and extract the actual article text."""
+    try:
+        resp = requests.get(
+            url,
+            timeout=15,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "text/html"
+            },
+            allow_redirects=True
+        )
+        resp.raise_for_status()
+        # Extract visible text roughly
+        html = resp.text
+        # Remove scripts/styles
+        html = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL)
+        html = re.sub(r"<style[^>]*>.*?</style>", "", html, flags=re.DOTALL)
+        # Get paragraph text
+        paragraphs = re.findall(r"<p[^>]*>(.*?)</p>", html, flags=re.DOTALL)
+        text = " ".join(clean_html(p) for p in paragraphs)
+        text = re.sub(r"\s+", " ", text).strip()
+        if len(text) > 100:
+            print(f"  Fetched article content: {len(text)} chars")
+            return text[:1500]
+    except Exception as e:
+        print(f"  Could not fetch article content: {e}")
+    return ""
 
 
-def make_caption(article):
+def groq_generate_caption_and_prompt(title, article_text):
+    """Use Groq to generate both a Facebook caption AND a specific image prompt."""
+    print("Asking Groq to write caption and image prompt...")
     today = datetime.now().strftime("%B %d, %Y")
-    title = clean_html(article["title"])
-    summary = clean_html(article.get("summary", ""))
 
-    if summary and len(summary) > 200:
-        summary = summary[:200].rsplit(" ", 1)[0] + "..."
+    content_for_groq = article_text[:800] if article_text else f"Article about: {title}"
 
-    summary_block = f"\n{summary}\n" if summary else ""
-
-    caption = f"""🤖 AI AUTOMATION UPDATE — {today}
-
-🔥 {title}
-{summary_block}
-What do you think about this? Drop your thoughts below! 👇
-
-💡 Follow this page for daily AI & automation insights!
-
-#AIAutomation #ArtificialIntelligence #AINews #Automation #TechNews #MachineLearning #FutureOfWork #AIDaily #GenerativeAI #AITrends"""
-
-    return caption
-
-
-def generate_image_prompt(title, summary):
-    """Use Groq to generate a highly relevant and specific image prompt."""
-    print("Generating smart image prompt with Groq...")
     try:
         headers = {
             "Authorization": f"Bearer {GROQ_API_KEY}",
             "Content-Type": "application/json"
         }
         body = {
-            "model": "llama3-8b-8192",
+            "model": "llama3-70b-8192",
             "messages": [
                 {
                     "role": "system",
                     "content": (
-                        "You are an expert at writing Stable Diffusion image prompts. "
-                        "Given a news article title and summary, write a vivid, specific, photorealistic image prompt "
-                        "that visually represents the topic. Keep it under 60 words. "
-                        "No text, no logos, no words in image. Focus on the scene, objects, mood. "
-                        "Always end with: cinematic lighting, 4k, photorealistic, detailed"
+                        "You are a social media manager for an AI education Facebook page called 'AI Academy'. "
+                        "Given an AI news article, you will output a JSON object with exactly two keys:\n"
+                        "1. 'caption' - an engaging Facebook post caption. Include: "
+                        "a relevant emoji at the start, the key insight from the article in 2-3 sentences, "
+                        "one thought-provoking question for followers, 'Follow AI Academy for daily AI insights!', "
+                        "and 5-8 relevant hashtags. Keep it under 300 words.\n"
+                        "2. 'image_prompt' - a highly specific Stable Diffusion image prompt that visually represents "
+                        "this specific article topic. Be very specific about objects, scene, style. "
+                        "NO text, NO logos, NO words in the image. Under 60 words. "
+                        "End with: photorealistic, cinematic lighting, 4k, highly detailed.\n"
+                        "Output ONLY valid JSON, nothing else."
                     )
                 },
                 {
                     "role": "user",
-                    "content": f"Article title: {title}\nSummary: {summary[:300]}\n\nWrite a detailed image prompt:"
+                    "content": (
+                        f"Date: {today}\n"
+                        f"Article title: {title}\n"
+                        f"Article content: {content_for_groq}\n\n"
+                        "Generate the Facebook caption and image prompt as JSON."
+                    )
                 }
             ],
-            "max_tokens": 120,
-            "temperature": 0.7
+            "max_tokens": 600,
+            "temperature": 0.75
         }
         resp = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
-            headers=headers, json=body, timeout=20
+            headers=headers, json=body, timeout=30
         )
         resp.raise_for_status()
-        prompt = resp.json()["choices"][0]["message"]["content"].strip()
-        # Remove any surrounding quotes if present
-        prompt = prompt.strip('"').strip("'")
-        print(f"  Groq prompt: {prompt}")
-        return prompt
+        raw = resp.json()["choices"][0]["message"]["content"].strip()
+        print(f"  Groq raw response: {raw[:200]}...")
+
+        # Parse JSON from response
+        # Sometimes Groq wraps in ```json ... ```
+        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if json_match:
+            result = json.loads(json_match.group())
+            caption = result.get("caption", "")
+            image_prompt = result.get("image_prompt", "")
+            if caption and image_prompt:
+                print(f"  Caption length: {len(caption)} chars")
+                print(f"  Image prompt: {image_prompt[:100]}...")
+                return caption, image_prompt
+
     except Exception as e:
         print(f"  Groq error: {e}")
-        return f"futuristic artificial intelligence technology concept, digital brain neural network, cinematic lighting, 4k, photorealistic, detailed"
+
+    # Fallback
+    print("  Using fallback caption and prompt")
+    caption = (
+        f"🤖 AI AUTOMATION UPDATE — {today}\n\n"
+        f"🔥 {title}\n\n"
+        f"What do you think about this? Drop your thoughts below! 👇\n\n"
+        f"💡 Follow AI Academy for daily AI & automation insights!\n\n"
+        f"#AIAutomation #ArtificialIntelligence #AINews #MachineLearning #AIDaily"
+    )
+    image_prompt = f"{title}, futuristic technology concept, cinematic lighting, 4k, photorealistic, highly detailed"
+    return caption, image_prompt
 
 
 def generate_image(prompt):
     """Use Pollinations.ai to generate image — free, reliable, no API key needed."""
     print("Generating image with Pollinations.ai...")
     try:
-        encoded_prompt = urllib.parse.quote(prompt)
-        image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1200&height=630&nologo=true&seed={int(datetime.now().timestamp())}"
-        print(f"  Fetching image from: {image_url[:80]}...")
-        resp = requests.get(image_url, timeout=60)
+        # Make the prompt more specific and safe for Pollinations
+        full_prompt = f"{prompt} --no text, letters, words, logos, watermarks"
+        encoded_prompt = urllib.parse.quote(full_prompt)
+        seed = int(datetime.now().timestamp()) % 99999
+        image_url = (
+            f"https://image.pollinations.ai/prompt/{encoded_prompt}"
+            f"?width=1200&height=630&nologo=true&seed={seed}&model=flux"
+        )
+        print(f"  Image URL: {image_url[:100]}...")
+        resp = requests.get(image_url, timeout=90)
         resp.raise_for_status()
 
-        # Make sure we got an actual image
         if resp.headers.get("content-type", "").startswith("image"):
             with open("/tmp/post_image.jpg", "wb") as f:
                 f.write(resp.content)
             print(f"  Image saved! ({len(resp.content)} bytes)")
             return "/tmp/post_image.jpg"
         else:
-            print(f"  Not an image response: {resp.headers.get('content-type')}")
+            print(f"  Not an image: {resp.headers.get('content-type')}")
             return None
     except Exception as e:
         print(f"  Pollinations error: {e}")
@@ -208,40 +247,45 @@ if __name__ == "__main__":
     print(f"Starting AI News Poster — {datetime.now()}")
     posted = load_posted()
 
-    all_articles = []
-    for feed in RSS_FEEDS:
-        print(f"Fetching: {feed}")
-        articles = fetch_articles(feed)
-        all_articles.extend(articles)
-        print(f"  Got {len(articles)} articles")
+    # Fetch trending AI news from Google News
+    articles = fetch_google_news()
 
-    fresh = [a for a in all_articles if a["url"] and a["url"] not in posted]
+    # Filter out already-posted
+    fresh = [a for a in articles if a["url"] and a["url"] not in posted]
     print(f"Fresh articles: {len(fresh)}")
 
     if not fresh:
-        fresh = [a for a in all_articles if a["url"]]
+        print("All articles already posted, picking latest anyway...")
+        fresh = [a for a in articles if a["url"]]
 
     if not fresh:
-        raise Exception("No articles found from any feed!")
+        raise Exception("No articles found from Google News!")
 
     article = fresh[0]
-    print(f"Posting: {article['title']}")
+    print(f"\nSelected article: {article['title']}")
+    print(f"URL: {article['url']}")
 
-    caption = make_caption(article)
+    # Fetch actual article content for better Groq context
+    article_text = fetch_article_content(article["url"])
+    if not article_text:
+        article_text = article.get("description", "")
 
-    # Step 1: Groq generates a smart, specific image prompt from the article
-    image_prompt = generate_image_prompt(article["title"], article.get("summary", ""))
+    # Groq generates BOTH the caption and the specific image prompt
+    caption, image_prompt = groq_generate_caption_and_prompt(article["title"], article_text)
 
-    # Step 2: Pollinations.ai generates the actual image (free, reliable!)
+    print(f"\nCaption preview:\n{caption[:200]}...\n")
+    print(f"Image prompt: {image_prompt}\n")
+
+    # Generate image using the specific prompt
     image_path = generate_image(image_prompt)
 
-    # Step 3: Post to Facebook
+    # Post to Facebook
     if image_path:
         post_to_facebook_with_image(caption, image_path)
     else:
-        print("Image generation failed, falling back to text-only post.")
+        print("Image generation failed, posting text only.")
         post_to_facebook_text_only(caption)
 
     posted.append(article["url"])
     save_posted(posted)
-    print("Done!")
+    print("\nDone! 🎉")
