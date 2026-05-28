@@ -6,6 +6,18 @@ import xml.etree.ElementTree as ET
 from datetime import datetime
 import urllib.parse
 import textwrap
+import subprocess
+import sys
+
+# Auto-install Pillow if not available
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    print("✅ Pillow already installed.")
+except ImportError:
+    print("📦 Pillow not found — installing now...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "Pillow", "--quiet"])
+    from PIL import Image, ImageDraw, ImageFont
+    print("✅ Pillow installed successfully.")
 
 PAGE_ID = os.environ["FB_PAGE_ID"]
 ACCESS_TOKEN = os.environ["FB_ACCESS_TOKEN"]
@@ -257,8 +269,6 @@ def add_text_overlay(image_path, headline, source=""):
     - Source credit bottom-right
     """
     try:
-        from PIL import Image, ImageDraw, ImageFont
-
         img = Image.open(image_path).convert("RGBA")
         w, h = img.size
 
@@ -342,9 +352,6 @@ def add_text_overlay(image_path, headline, source=""):
         print(f"  ✅ Overlay saved: {output_path}")
         return output_path
 
-    except ImportError:
-        print("  ⚠️ Pillow not installed — skipping overlay. Run: pip install Pillow")
-        return image_path
     except Exception as e:
         print(f"  ⚠️ Overlay error: {e}")
         return image_path
