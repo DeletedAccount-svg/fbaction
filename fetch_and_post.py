@@ -2,6 +2,7 @@ import requests
 import os
 import json
 import re
+import random
 import xml.etree.ElementTree as ET
 from datetime import datetime
 import urllib.parse
@@ -163,7 +164,7 @@ def groq_generate_caption_and_prompt(title, article_text, source="Google News"):
                     "content": (
                         "You are a passionate social media manager for 'AI Academy @ ranksorcery.com', a Facebook page that educates "
                         "people about artificial intelligence in an exciting and approachable way. "
-                        "Your writing is vivid, enthusiastic, and uses storytelling to pull readers in.\n\n"
+                        "Your writing is vivid, enthusiastic, conversational, and uses storytelling to pull readers in.\n\n"
                         "Given an AI news article, output a JSON object with exactly THREE keys:\n\n"
 
                         "1. 'headline' — A short, punchy, ALL-CAPS headline (8–12 words max) that will be printed "
@@ -171,10 +172,14 @@ def groq_generate_caption_and_prompt(title, article_text, source="Google News"):
                         "No hashtags, no emojis. Example: 'AI NOW READS YOUR EMOTIONS BETTER THAN HUMANS'\n\n"
 
                         "2. 'caption' — A rich, engaging Facebook post. Structure it like this:\n"
-                        "   - Line 1: A bold emoji + a dramatic one-liner hook that stops the scroll.\n"
+                        "   - Line 1: A bold emoji + a UNIQUE, article-specific one-liner hook written in a human, "
+                        "conversational tone. This MUST directly reference what actually happened in THIS article — "
+                        "name the company, technology, or event. NEVER start with generic phrases like "
+                        "'Artificial intelligence is reshaping', 'AI is changing the world', or any broad AI statement. "
+                        "Write like a curious, excited human sharing breaking news with a friend.\n"
                         "   - Blank line\n"
                         "   - 4–5 sentences of detailed storytelling: explain WHAT happened, WHY it matters, "
-                        "HOW it changes things, and WHAT the real-world impact is. Paint a vivid picture. "
+                        "HOW it changes things, and WHAT the real-world impact is. Be specific. Use the article details. "
                         "Each sentence should be full, detailed, and informative — minimum 20 words per sentence.\n"
                         "   - Blank line\n"
                         "   - A thought-provoking question that personally involves the reader.\n"
@@ -243,23 +248,56 @@ def groq_generate_caption_and_prompt(title, article_text, source="Google News"):
     # Fallback
     print("  Using fallback caption, prompt, and headline")
     source_line = f"\n📰 {source_credit}" if source_credit else ""
+
+    fallback_openers = [
+        f"🚨 Just dropped — and this one's hard to ignore: {title}",
+        f"🔥 This just changed the game: {title}",
+        f"👀 You're going to want to read this — {title}",
+        f"⚡ Big news in the AI space today: {title}",
+        f"🧠 This story is making waves right now — {title}",
+        f"💥 Here's what everyone in tech is talking about: {title}",
+        f"🌐 Something significant just happened — {title}",
+        f"📢 If you follow AI news, you already know about this: {title}",
+    ]
+    opener = random.choice(fallback_openers)
+
+    fallback_bodies = [
+        (
+            f"This development is moving faster than most people realize, and the implications stretch well beyond "
+            f"just the tech industry. From how businesses operate to how individuals interact with everyday tools, "
+            f"the ripple effects of this news will be felt across multiple sectors in the months ahead. "
+            f"Experts are already weighing in, and the conversation around responsible adoption is growing louder."
+        ),
+        (
+            f"What makes this story stand out is the speed at which things are evolving — and the real-world "
+            f"consequences that are starting to surface. Industries from healthcare and finance to education and "
+            f"creative arts are all watching closely, because what happens next could redefine how we work, "
+            f"create, and solve problems at scale."
+        ),
+        (
+            f"This is the kind of development that sounds technical on the surface but has everyday impact you'll "
+            f"actually feel. Whether it's how you use your phone, how your job gets done, or how businesses reach "
+            f"customers — the downstream effects of stories like this are very real, and they tend to move quickly "
+            f"once momentum builds."
+        ),
+        (
+            f"Behind every headline like this is a team of researchers, engineers, and decision-makers who've been "
+            f"building toward this moment for years. The fact that it's public now means the next phase — adoption, "
+            f"regulation, competition — is already in motion. And if history is any guide, things are about to "
+            f"accelerate considerably from here."
+        ),
+    ]
+    body = random.choice(fallback_bodies)
+
     caption = (
-        f"🤖 THE FUTURE OF AI IS HERE — {today}\n\n"
-        f"Artificial intelligence is reshaping the world as we know it, and this latest development is a "
-        f"clear sign of just how fast the technology is evolving. Researchers and engineers are pushing the "
-        f"boundaries of what machines can do, bringing us closer to a future where AI assists in nearly "
-        f"every aspect of human life. This breakthrough has significant implications for industries ranging "
-        f"from healthcare and education to finance and creative arts, touching the lives of billions of "
-        f"people worldwide. As these systems grow smarter and more capable, the conversation around ethical "
-        f"AI use, data privacy, and human-AI collaboration becomes more important than ever before.\n\n"
+        f"{opener}\n\n"
+        f"{body}\n\n"
         f"🔥 {title}\n\n"
         f"How do you think this development will change your daily life or your industry?\n"
         f"{source_line}\n\n"
         f"💡 Follow AI Academy @ ranksorcery.com for daily AI insights!\n\n"
-        f"🤖 Here's something wild — this entire post was created and published automatically by AI. "
-        f"No human wrote this caption, picked this image, or hit the post button. "
-        f"Every single element — the news, the AI-generated visual, the caption, and the hashtags — "
-        f"was handled end-to-end by an automated system running quietly in the background. "
+        f"🤖 This entire post — the news, the image, the caption, and the hashtags — was created and "
+        f"published automatically by AI with zero manual effort. "
         f"Imagine having a system like this running your page 24/7 — delivering consistent, quality content every single day without lifting a finger. "
         f"💬 Want to automate your Facebook page just like this? Type HOW in the comments and we'll show you how it's done!\n\n"
         f"#AIAutomation #ArtificialIntelligence #AINews #MachineLearning #FutureOfAI #AIDaily #TechNews"
