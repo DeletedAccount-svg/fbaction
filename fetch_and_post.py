@@ -5,6 +5,7 @@ import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
 import urllib.parse
+import textwrap
 
 PAGE_ID = os.environ["FB_PAGE_ID"]
 ACCESS_TOKEN = os.environ["FB_ACCESS_TOKEN"]
@@ -55,8 +56,6 @@ def fetch_google_news():
                 source_el = item.find("source")
                 if title_el is not None and link_el is not None:
                     title = clean_html(title_el.text or "")
-                    # Google News titles include source like "Title - Source"
-                    # Remove the " - Source" part at the end
                     title = re.sub(r"\s*-\s*[^-]+$", "", title).strip()
                     articles.append({
                         "title": title,
@@ -83,18 +82,15 @@ def fetch_article_content(url):
             allow_redirects=True
         )
         resp.raise_for_status()
-        # Extract visible text roughly
         html = resp.text
-        # Remove scripts/styles
         html = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL)
         html = re.sub(r"<style[^>]*>.*?</style>", "", html, flags=re.DOTALL)
-        # Get paragraph text
         paragraphs = re.findall(r"<p[^>]*>(.*?)</p>", html, flags=re.DOTALL)
         text = " ".join(clean_html(p) for p in paragraphs)
         text = re.sub(r"\s+", " ", text).strip()
         if len(text) > 100:
             print(f"  Fetched article content: {len(text)} chars")
-            return text[:1500]
+            return text[:2000]
     except Exception as e:
         print(f"  Could not fetch article content: {e}")
     return ""
@@ -105,7 +101,7 @@ def parse_groq_json(raw: str) -> dict | None:
     Robustly extract a JSON object from Groq's response.
     Tries three strategies in order:
       1. Direct parse (model returned clean JSON).
-      2. Extract the first {...} block (model wrapped text around it).
+      2. Extract the first {...} block (handles preamble/postamble text).
       3. Strip ```json ... ``` fences then parse.
     Returns the parsed dict or None on failure.
     """
@@ -115,7 +111,7 @@ def parse_groq_json(raw: str) -> dict | None:
     except json.JSONDecodeError:
         pass
 
-    # Strategy 2 – first {...} blob (handles preamble/postamble text)
+    # Strategy 2 – first {...} blob
     json_match = re.search(r"\{.*\}", raw, re.DOTALL)
     if json_match:
         try:
@@ -135,11 +131,11 @@ def parse_groq_json(raw: str) -> dict | None:
 
 
 def groq_generate_caption_and_prompt(title, article_text, source="Google News"):
-    """Use Groq to generate both a Facebook caption AND a specific image prompt."""
-    print("Asking Groq to write caption and image prompt...")
+    """Use Groq to generate a Facebook caption, image prompt, and overlay headline."""
+    print("Asking Groq to write caption, image prompt, and headline...")
     today = datetime.now().strftime("%B %d, %Y")
 
-    content_for_groq = article_text[:800] if article_text else f"Article about: {title}"
+    content_for_groq = article_text[:1000] if article_text else f"Article about: {title}"
     source_credit = f"via {source}" if source else ""
 
     try:
@@ -153,19 +149,35 @@ def groq_generate_caption_and_prompt(title, article_text, source="Google News"):
                 {
                     "role": "system",
                     "content": (
-                        "You are a social media manager for an AI education Facebook page called 'AI Academy'. "
-                        "Given an AI news article, you will output a JSON object with exactly two keys:\n"
-                        "1. 'caption' - an engaging Facebook post caption. Include: "
-                        "a relevant emoji at the start, the key insight from the article in 2-3 sentences, "
-                        "one thought-provoking question for followers, "
-                        f"the source credit '{source_credit}' on its own line, "
-                        "'Follow AI Academy for daily AI insights!', "
-                        "and 5-8 relevant hashtags. Keep it under 300 words.\n"
-                        "2. 'image_prompt' - a highly specific Stable Diffusion image prompt that visually represents "
-                        "this specific article topic. Be very specific about objects, scene, style. "
-                        "NO text, NO logos, NO words in the image. Under 60 words. "
-                        "End with: photorealistic, cinematic lighting, 4k, highly detailed.\n"
-                        "IMPORTANT: Output ONLY a valid JSON object — no markdown fences, no preamble, no postamble. "
+                        "You are a passionate social media manager for 'AI Academy @ ranksorcery.com', a Facebook page that educates "
+                        "people about artificial intelligence in an exciting and approachable way. "
+                        "Your writing is vivid, enthusiastic, and uses storytelling to pull readers in.\n\n"
+                        "Given an AI news article, output a JSON object with exactly THREE keys:\n\n"
+
+                        "1. 'headline' — A short, punchy, ALL-CAPS headline (8–12 words max) that will be printed "
+                        "on the post image. Make it dramatic and attention-grabbing, like a newspaper front page. "
+                        "No hashtags, no emojis. Example: 'AI NOW READS YOUR EMOTIONS BETTER THAN HUMANS'\n\n"
+
+                        "2. 'caption' — A rich, engaging Facebook post. Structure it like this:\n"
+                        "   - Line 1: A bold emoji + a dramatic one-liner hook that stops the scroll.\n"
+                        "   - Blank line\n"
+                        "   - 4–5 sentences of detailed storytelling: explain WHAT happened, WHY it matters, "
+                        "HOW it changes things, and WHAT the real-world impact is. Paint a vivid picture. "
+                        "Each sentence should be full, detailed, and informative — minimum 20 words per sentence.\n"
+                        "   - Blank line\n"
+                        "   - A thought-provoking question that personally involves the reader.\n"
+                        "   - Blank line\n"
+                        f"   - '📰 {source_credit}' on its own line (source credit).\n"
+                        "   - '💡 Follow AI Academy @ ranksorcery.com for daily AI insights!' on its own line.\n"
+                        "   - 6–8 relevant hashtags on the last line.\n"
+                        "   Total length: 250–350 words.\n\n"
+
+                        "3. 'image_prompt' — A vivid, cinematic Stable Diffusion prompt that visually represents "
+                        "the article topic. Describe specific objects, lighting, environment, and mood. "
+                        "Absolutely NO text, letters, numbers, logos, or watermarks in the scene. "
+                        "Under 75 words. End with: photorealistic, cinematic lighting, 4k ultra HD, highly detailed.\n\n"
+
+                        "CRITICAL: Output ONLY valid JSON. No markdown fences, no preamble, no extra text. "
                         "Start your response with '{' and end with '}'."
                     )
                 },
@@ -175,13 +187,13 @@ def groq_generate_caption_and_prompt(title, article_text, source="Google News"):
                         f"Date: {today}\n"
                         f"Article title: {title}\n"
                         f"Source: {source}\n"
-                        f"Article content: {content_for_groq}\n\n"
-                        "Generate the Facebook caption and image prompt as JSON."
+                        f"Article content:\n{content_for_groq}\n\n"
+                        "Generate the headline, caption, and image prompt as JSON."
                     )
                 }
             ],
-            "max_tokens": 600,
-            "temperature": 0.75
+            "max_tokens": 900,
+            "temperature": 0.80
         }
         resp = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
@@ -189,17 +201,19 @@ def groq_generate_caption_and_prompt(title, article_text, source="Google News"):
         )
         resp.raise_for_status()
         raw = resp.json()["choices"][0]["message"]["content"].strip()
-        print(f"  Groq raw response: {raw[:200]}...")
+        print(f"  Groq raw response preview: {raw[:200]}...")
 
         result = parse_groq_json(raw)
         if result:
             caption = result.get("caption", "")
             image_prompt = result.get("image_prompt", "")
+            headline = result.get("headline", title[:60].upper())
             if caption and image_prompt:
                 print(f"  ✅ JSON parsed successfully!")
+                print(f"  Headline: {headline}")
                 print(f"  Caption length: {len(caption)} chars")
                 print(f"  Image prompt: {image_prompt[:100]}...")
-                return caption, image_prompt
+                return caption, image_prompt, headline
             else:
                 print(f"  ⚠️ JSON parsed but missing keys. Keys found: {list(result.keys())}")
         else:
@@ -209,25 +223,137 @@ def groq_generate_caption_and_prompt(title, article_text, source="Google News"):
         print(f"  Groq error: {e}")
 
     # Fallback
-    print("  Using fallback caption and prompt")
+    print("  Using fallback caption, prompt, and headline")
     source_line = f"\n📰 {source_credit}" if source_credit else ""
     caption = (
-        f"🤖 AI AUTOMATION UPDATE — {today}\n\n"
+        f"🤖 THE FUTURE OF AI IS HERE — {today}\n\n"
+        f"Artificial intelligence is reshaping the world as we know it, and this latest development is a "
+        f"clear sign of just how fast the technology is evolving. Researchers and engineers are pushing the "
+        f"boundaries of what machines can do, bringing us closer to a future where AI assists in nearly "
+        f"every aspect of human life. This breakthrough has significant implications for industries ranging "
+        f"from healthcare and education to finance and creative arts, touching the lives of billions of "
+        f"people worldwide. As these systems grow smarter and more capable, the conversation around ethical "
+        f"AI use, data privacy, and human-AI collaboration becomes more important than ever before.\n\n"
         f"🔥 {title}\n\n"
-        f"What do you think about this? Drop your thoughts below! 👇\n"
+        f"How do you think this development will change your daily life or your industry?\n"
         f"{source_line}\n\n"
-        f"💡 Follow AI Academy for daily AI & automation insights!\n\n"
-        f"#AIAutomation #ArtificialIntelligence #AINews #MachineLearning #AIDaily"
+        f"💡 Follow AI Academy @ ranksorcery.com for daily AI insights!\n\n"
+        f"#AIAutomation #ArtificialIntelligence #AINews #MachineLearning #FutureOfAI #AIDaily #TechNews"
     )
-    image_prompt = f"{title}, futuristic technology concept, cinematic lighting, 4k, photorealistic, highly detailed"
-    return caption, image_prompt
+    headline = title[:60].upper()
+    image_prompt = (
+        f"{title}, futuristic technology concept, glowing neural networks, "
+        f"cinematic lighting, 4k ultra HD, photorealistic, highly detailed"
+    )
+    return caption, image_prompt, headline
+
+
+def add_text_overlay(image_path, headline, source=""):
+    """
+    Add a professional text overlay to the image using Pillow.
+    - Dark gradient band across the bottom for readability
+    - Centered bold white headline text
+    - 'AI Academy' branding top-left
+    - Source credit bottom-right
+    """
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+
+        img = Image.open(image_path).convert("RGBA")
+        w, h = img.size
+
+        # --- Build dark gradient overlay ---
+        overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        draw_ov = ImageDraw.Draw(overlay)
+
+        # Top branding bar (semi-transparent)
+        draw_ov.rectangle([(0, 0), (w, 58)], fill=(0, 0, 0, 170))
+
+        # Bottom gradient band (bottom 42% of image)
+        band_top = int(h * 0.58)
+        for y in range(band_top, h):
+            progress = (y - band_top) / (h - band_top)
+            alpha = int(180 + 65 * progress)  # ramps from 180 → 245
+            draw_ov.line([(0, y), (w, y)], fill=(0, 0, 0, alpha))
+
+        # Composite overlay onto image
+        img = Image.alpha_composite(img, overlay)
+        draw = ImageDraw.Draw(img)
+
+        # --- Load fonts ---
+        font_headline = None
+        font_brand = None
+        font_source = None
+
+        font_candidates = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+            "/usr/share/fonts/truetype/freefont/FreeSansBold.ttf",
+            "/System/Library/Fonts/Helvetica.ttc",
+            "C:/Windows/Fonts/arialbd.ttf",
+            "C:/Windows/Fonts/arial.ttf",
+        ]
+        for fp in font_candidates:
+            if os.path.exists(fp):
+                font_headline = ImageFont.truetype(fp, size=58)
+                font_brand   = ImageFont.truetype(fp, size=28)
+                font_source  = ImageFont.truetype(fp, size=22)
+                print(f"  Using font: {fp}")
+                break
+
+        if not font_headline:
+            print("  ⚠️ No TTF font found, using PIL default (small)")
+            font_headline = ImageFont.load_default()
+            font_brand    = font_headline
+            font_source   = font_headline
+
+        # --- Brand bar top-left ---
+        draw.text((22, 14), "⚡ AI Academy @ ranksorcery.com", font=font_brand, fill=(255, 255, 255, 255))
+
+        # --- Headline text (centered, wrapped, bottom area) ---
+        max_chars_per_line = max(12, int(w / 36))
+        lines = textwrap.wrap(headline, width=max_chars_per_line)[:4]  # max 4 lines
+
+        # Measure total block height
+        line_h = font_headline.getbbox("Ag")[3] + 10
+        total_text_h = line_h * len(lines)
+        y_start = int(h * 0.60) + max(0, (int(h * 0.32) - total_text_h) // 2)
+
+        for line in lines:
+            bbox = draw.textbbox((0, 0), line, font=font_headline)
+            text_w = bbox[2] - bbox[0]
+            x = (w - text_w) // 2
+            # Drop shadow
+            draw.text((x + 3, y_start + 3), line, font=font_headline, fill=(0, 0, 0, 200))
+            # Main text (white)
+            draw.text((x, y_start), line, font=font_headline, fill=(255, 255, 255, 255))
+            y_start += line_h
+
+        # --- Source credit bottom-right ---
+        if source:
+            source_text = f"via {source}"
+            bbox = draw.textbbox((0, 0), source_text, font=font_source)
+            sw = bbox[2] - bbox[0]
+            draw.text((w - sw - 20, h - 34), source_text, font=font_source, fill=(160, 210, 255, 230))
+
+        # --- Save as JPEG ---
+        output_path = image_path.replace(".jpg", "_overlay.jpg")
+        img.convert("RGB").save(output_path, "JPEG", quality=93)
+        print(f"  ✅ Overlay saved: {output_path}")
+        return output_path
+
+    except ImportError:
+        print("  ⚠️ Pillow not installed — skipping overlay. Run: pip install Pillow")
+        return image_path
+    except Exception as e:
+        print(f"  ⚠️ Overlay error: {e}")
+        return image_path
 
 
 def generate_image(prompt):
     """Use Pollinations.ai to generate image — free, reliable, no API key needed."""
     print("Generating image with Pollinations.ai...")
     try:
-        # Make the prompt more specific and safe for Pollinations
         full_prompt = f"{prompt} --no text, letters, words, logos, watermarks"
         encoded_prompt = urllib.parse.quote(full_prompt)
         seed = int(datetime.now().timestamp()) % 99999
@@ -240,10 +366,11 @@ def generate_image(prompt):
         resp.raise_for_status()
 
         if resp.headers.get("content-type", "").startswith("image"):
-            with open("/tmp/post_image.jpg", "wb") as f:
+            path = "/tmp/post_image.jpg"
+            with open(path, "wb") as f:
                 f.write(resp.content)
             print(f"  Image saved! ({len(resp.content)} bytes)")
-            return "/tmp/post_image.jpg"
+            return path
         else:
             print(f"  Not an image: {resp.headers.get('content-type')}")
             return None
@@ -290,10 +417,7 @@ if __name__ == "__main__":
     print(f"Starting AI News Poster — {datetime.now()}")
     posted = load_posted()
 
-    # Fetch trending AI news from Google News
     articles = fetch_google_news()
-
-    # Filter out already-posted
     fresh = [a for a in articles if a["url"] and a["url"] not in posted]
     print(f"Fresh articles: {len(fresh)}")
 
@@ -314,19 +438,21 @@ if __name__ == "__main__":
     if not article_text:
         article_text = article.get("description", "")
 
-    # Groq generates BOTH the caption and the specific image prompt
-    caption, image_prompt = groq_generate_caption_and_prompt(
+    # Groq generates the caption, image prompt, AND overlay headline
+    caption, image_prompt, headline = groq_generate_caption_and_prompt(
         article["title"], article_text, source=article["source"]
     )
 
-    print(f"\nCaption preview:\n{caption[:200]}...\n")
-    print(f"Image prompt: {image_prompt}\n")
+    print(f"\n📰 Headline for overlay: {headline}")
+    print(f"\n📝 Caption preview:\n{caption[:300]}...\n")
+    print(f"🎨 Image prompt: {image_prompt}\n")
 
-    # Generate image using the specific prompt
+    # Generate the base image
     image_path = generate_image(image_prompt)
 
-    # Post to Facebook
     if image_path:
+        # Add text overlay (headline + branding + source)
+        image_path = add_text_overlay(image_path, headline, source=article["source"])
         post_to_facebook_with_image(caption, image_path)
     else:
         print("Image generation failed, posting text only.")
