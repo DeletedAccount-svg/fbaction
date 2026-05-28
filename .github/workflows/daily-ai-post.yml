@@ -2,7 +2,9 @@ name: Daily AI News Post to Facebook
 
 on:
   schedule:
-    - cron: '0 23 * * *'  # Every day at 11PM UTC = 7AM Manila (GMT+8)
+    - cron: '0 23 * * *'  # 7AM Manila (GMT+8)
+    - cron: '0 16 * * *'  # 12AM Manila (GMT+8, midnight)
+    - cron: '0 9 * * *'   # 5PM Manila (GMT+8)
   workflow_dispatch:       # Also allow manual trigger anytime
 
 jobs:
@@ -10,6 +12,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write  # Needed to save posted_urls.json back to repo
+
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # Fix: opt into Node.js 24 (Node.js 20 deprecated June 2026)
 
     steps:
       - name: Checkout repo
