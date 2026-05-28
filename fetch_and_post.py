@@ -100,12 +100,47 @@ def fetch_article_content(url):
     return ""
 
 
-def groq_generate_caption_and_prompt(title, article_text):
+def parse_groq_json(raw: str) -> dict | None:
+    """
+    Robustly extract a JSON object from Groq's response.
+    Tries three strategies in order:
+      1. Direct parse (model returned clean JSON).
+      2. Extract the first {...} block (model wrapped text around it).
+      3. Strip ```json ... ``` fences then parse.
+    Returns the parsed dict or None on failure.
+    """
+    # Strategy 1 – clean JSON
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+
+    # Strategy 2 – first {...} blob (handles preamble/postamble text)
+    json_match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if json_match:
+        try:
+            return json.loads(json_match.group())
+        except json.JSONDecodeError:
+            pass
+
+    # Strategy 3 – strip markdown code fences
+    fenced = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.IGNORECASE)
+    fenced = re.sub(r"\s*```$", "", fenced.strip())
+    try:
+        return json.loads(fenced)
+    except json.JSONDecodeError:
+        pass
+
+    return None
+
+
+def groq_generate_caption_and_prompt(title, article_text, source="Google News"):
     """Use Groq to generate both a Facebook caption AND a specific image prompt."""
     print("Asking Groq to write caption and image prompt...")
     today = datetime.now().strftime("%B %d, %Y")
 
     content_for_groq = article_text[:800] if article_text else f"Article about: {title}"
+    source_credit = f"via {source}" if source else ""
 
     try:
         headers = {
@@ -122,13 +157,16 @@ def groq_generate_caption_and_prompt(title, article_text):
                         "Given an AI news article, you will output a JSON object with exactly two keys:\n"
                         "1. 'caption' - an engaging Facebook post caption. Include: "
                         "a relevant emoji at the start, the key insight from the article in 2-3 sentences, "
-                        "one thought-provoking question for followers, 'Follow AI Academy for daily AI insights!', "
+                        "one thought-provoking question for followers, "
+                        f"the source credit '{source_credit}' on its own line, "
+                        "'Follow AI Academy for daily AI insights!', "
                         "and 5-8 relevant hashtags. Keep it under 300 words.\n"
                         "2. 'image_prompt' - a highly specific Stable Diffusion image prompt that visually represents "
                         "this specific article topic. Be very specific about objects, scene, style. "
                         "NO text, NO logos, NO words in the image. Under 60 words. "
                         "End with: photorealistic, cinematic lighting, 4k, highly detailed.\n"
-                        "Output ONLY valid JSON, nothing else."
+                        "IMPORTANT: Output ONLY a valid JSON object — no markdown fences, no preamble, no postamble. "
+                        "Start your response with '{' and end with '}'."
                     )
                 },
                 {
@@ -136,6 +174,7 @@ def groq_generate_caption_and_prompt(title, article_text):
                     "content": (
                         f"Date: {today}\n"
                         f"Article title: {title}\n"
+                        f"Source: {source}\n"
                         f"Article content: {content_for_groq}\n\n"
                         "Generate the Facebook caption and image prompt as JSON."
                     )
@@ -152,27 +191,31 @@ def groq_generate_caption_and_prompt(title, article_text):
         raw = resp.json()["choices"][0]["message"]["content"].strip()
         print(f"  Groq raw response: {raw[:200]}...")
 
-        # Parse JSON from response
-        # Sometimes Groq wraps in ```json ... ```
-        json_match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if json_match:
-            result = json.loads(json_match.group())
+        result = parse_groq_json(raw)
+        if result:
             caption = result.get("caption", "")
             image_prompt = result.get("image_prompt", "")
             if caption and image_prompt:
+                print(f"  ✅ JSON parsed successfully!")
                 print(f"  Caption length: {len(caption)} chars")
                 print(f"  Image prompt: {image_prompt[:100]}...")
                 return caption, image_prompt
+            else:
+                print(f"  ⚠️ JSON parsed but missing keys. Keys found: {list(result.keys())}")
+        else:
+            print(f"  ❌ All JSON parse strategies failed. Raw:\n{raw[:500]}")
 
     except Exception as e:
         print(f"  Groq error: {e}")
 
     # Fallback
     print("  Using fallback caption and prompt")
+    source_line = f"\n📰 {source_credit}" if source_credit else ""
     caption = (
         f"🤖 AI AUTOMATION UPDATE — {today}\n\n"
         f"🔥 {title}\n\n"
-        f"What do you think about this? Drop your thoughts below! 👇\n\n"
+        f"What do you think about this? Drop your thoughts below! 👇\n"
+        f"{source_line}\n\n"
         f"💡 Follow AI Academy for daily AI & automation insights!\n\n"
         f"#AIAutomation #ArtificialIntelligence #AINews #MachineLearning #AIDaily"
     )
@@ -264,6 +307,7 @@ if __name__ == "__main__":
     article = fresh[0]
     print(f"\nSelected article: {article['title']}")
     print(f"URL: {article['url']}")
+    print(f"Source: {article['source']}")
 
     # Fetch actual article content for better Groq context
     article_text = fetch_article_content(article["url"])
@@ -271,7 +315,9 @@ if __name__ == "__main__":
         article_text = article.get("description", "")
 
     # Groq generates BOTH the caption and the specific image prompt
-    caption, image_prompt = groq_generate_caption_and_prompt(article["title"], article_text)
+    caption, image_prompt = groq_generate_caption_and_prompt(
+        article["title"], article_text, source=article["source"]
+    )
 
     print(f"\nCaption preview:\n{caption[:200]}...\n")
     print(f"Image prompt: {image_prompt}\n")
