@@ -3,11 +3,11 @@ import os
 import json
 import xml.etree.ElementTree as ET
 from datetime import datetime
+import urllib.parse
 
 PAGE_ID = os.environ["FB_PAGE_ID"]
 ACCESS_TOKEN = os.environ["FB_ACCESS_TOKEN"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
-HF_API_KEY = os.environ["HF_API_KEY"]
 
 RSS_FEEDS = [
     "https://www.artificialintelligence-news.com/feed/",
@@ -103,7 +103,7 @@ What do you think about this? Drop your thoughts below! 👇
 
 
 def generate_image_prompt(title, summary):
-    """Use Groq to generate a highly relevant image prompt based on article."""
+    """Use Groq to generate a highly relevant and specific image prompt."""
     print("Generating smart image prompt with Groq...")
     try:
         headers = {
@@ -119,7 +119,8 @@ def generate_image_prompt(title, summary):
                         "You are an expert at writing Stable Diffusion image prompts. "
                         "Given a news article title and summary, write a vivid, specific, photorealistic image prompt "
                         "that visually represents the topic. Keep it under 60 words. "
-                        "No text, no logos, no words in image. Focus on the scene, objects, mood."
+                        "No text, no logos, no words in image. Focus on the scene, objects, mood. "
+                        "Always end with: cinematic lighting, 4k, photorealistic, detailed"
                     )
                 },
                 {
@@ -130,54 +131,43 @@ def generate_image_prompt(title, summary):
             "max_tokens": 120,
             "temperature": 0.7
         }
-        resp = requests.post("https://api.groq.com/openai/v1/chat/completions", headers=headers, json=body, timeout=20)
+        resp = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers=headers, json=body, timeout=20
+        )
         resp.raise_for_status()
         prompt = resp.json()["choices"][0]["message"]["content"].strip()
+        # Remove any surrounding quotes if present
+        prompt = prompt.strip('"').strip("'")
         print(f"  Groq prompt: {prompt}")
         return prompt
     except Exception as e:
         print(f"  Groq error: {e}")
-        # Fallback prompt
-        return f"futuristic technology concept, artificial intelligence, digital innovation, cinematic lighting, photorealistic"
+        return f"futuristic artificial intelligence technology concept, digital brain neural network, cinematic lighting, 4k, photorealistic, detailed"
 
 
 def generate_image(prompt):
-    """Use HuggingFace Inference API to generate image from prompt."""
-    print("Generating image with HuggingFace...")
-    model = "stabilityai/stable-diffusion-xl-base-1.0"
-    api_url = f"https://api-inference.huggingface.co/models/{model}"
-    headers = {"Authorization": f"Bearer {HF_API_KEY}"}
-    payload = {
-        "inputs": prompt,
-        "parameters": {
-            "width": 1024,
-            "height": 576,
-            "num_inference_steps": 30,
-            "guidance_scale": 7.5
-        }
-    }
+    """Use Pollinations.ai to generate image — free, reliable, no API key needed."""
+    print("Generating image with Pollinations.ai...")
+    try:
+        encoded_prompt = urllib.parse.quote(prompt)
+        image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1200&height=630&nologo=true&seed={int(datetime.now().timestamp())}"
+        print(f"  Fetching image from: {image_url[:80]}...")
+        resp = requests.get(image_url, timeout=60)
+        resp.raise_for_status()
 
-    for attempt in range(3):
-        try:
-            resp = requests.post(api_url, headers=headers, json=payload, timeout=120)
-            if resp.status_code == 503:
-                import time
-                wait = 30
-                print(f"  Model loading, waiting {wait}s... (attempt {attempt+1}/3)")
-                time.sleep(wait)
-                continue
-            resp.raise_for_status()
-            image_bytes = resp.content
+        # Make sure we got an actual image
+        if resp.headers.get("content-type", "").startswith("image"):
             with open("/tmp/post_image.jpg", "wb") as f:
-                f.write(image_bytes)
-            print("  Image saved!")
+                f.write(resp.content)
+            print(f"  Image saved! ({len(resp.content)} bytes)")
             return "/tmp/post_image.jpg"
-        except Exception as e:
-            print(f"  HuggingFace attempt {attempt+1} error: {e}")
-            if attempt == 2:
-                return None
-
-    return None
+        else:
+            print(f"  Not an image response: {resp.headers.get('content-type')}")
+            return None
+    except Exception as e:
+        print(f"  Pollinations error: {e}")
+        return None
 
 
 def post_to_facebook_with_image(message, image_path):
@@ -239,10 +229,10 @@ if __name__ == "__main__":
 
     caption = make_caption(article)
 
-    # Step 1: Groq generates a smart relevant image prompt
+    # Step 1: Groq generates a smart, specific image prompt from the article
     image_prompt = generate_image_prompt(article["title"], article.get("summary", ""))
 
-    # Step 2: HuggingFace generates the actual image
+    # Step 2: Pollinations.ai generates the actual image (free, reliable!)
     image_path = generate_image(image_prompt)
 
     # Step 3: Post to Facebook
