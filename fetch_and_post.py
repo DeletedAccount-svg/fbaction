@@ -184,8 +184,9 @@ def groq_generate_caption_and_prompt(title, article_text, source="Google News"):
                         "   - Blank line\n"
                         "   - A 3–4 sentence CTA block: Tell readers that this entire post — the news, the image, "
                         "the caption, the hashtags — was created and published AUTOMATICALLY by AI with zero manual effort. "
-                        "Build curiosity and excitement about automation. End with exactly this line: "
-                        "'💬 Want to automate your Facebook page just like this? Type HOW in the comments and we'll show you how it's done!'\n"
+                        "Build curiosity and excitement about automation. End with exactly these lines: "
+                        "'Imagine having a system like this running your page 24/7 — delivering consistent, quality content every single day without lifting a finger. "
+                        "💬 Want to automate your Facebook page just like this? Type HOW in the comments and we\'ll show you how it\'s done!'\n"
                         "   - 6–8 relevant hashtags on the last line.\n"
                         "   Total length: 280–380 words.\n\n"
 
@@ -259,7 +260,7 @@ def groq_generate_caption_and_prompt(title, article_text, source="Google News"):
         f"No human wrote this caption, picked this image, or hit the post button. "
         f"Every single element — the news, the AI-generated visual, the caption, and the hashtags — "
         f"was handled end-to-end by an automated system running quietly in the background. "
-        f"Imagine having a system like this working for YOUR page 24/7, posting quality content while you sleep.\n\n"
+        f"Imagine having a system like this running your page 24/7 — delivering consistent, quality content every single day without lifting a finger. "
         f"💬 Want to automate your Facebook page just like this? Type HOW in the comments and we'll show you how it's done!\n\n"
         f"#AIAutomation #ArtificialIntelligence #AINews #MachineLearning #FutureOfAI #AIDaily #TechNews"
     )
