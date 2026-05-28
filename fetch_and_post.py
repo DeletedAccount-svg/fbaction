@@ -2,6 +2,7 @@ import requests
 import os
 import json
 import xml.etree.ElementTree as ET
+import urllib.parse
 from datetime import datetime
 
 PAGE_ID = os.environ["FB_PAGE_ID"]
@@ -100,14 +101,54 @@ What do you think about this? Drop your thoughts below! 👇
     return caption
 
 
-def post_to_facebook(message):
-    url = f"https://graph.facebook.com/v19.0/{PAGE_ID}/feed"
-    payload = {
-        "message": message,
-        "access_token": ACCESS_TOKEN
-    }
+def generate_image(title):
+    """Generate an AI image using Pollinations.ai — free, no API key needed!"""
+    print("  Generating image with Pollinations.ai...")
 
-    response = requests.post(url, data=payload)
+    prompt = (
+        f"futuristic AI technology illustration inspired by: {title}, "
+        "digital art, vibrant neon colors, modern tech aesthetic, "
+        "clean professional design, no text, widescreen"
+    )
+    encoded_prompt = urllib.parse.quote(prompt)
+    seed = abs(hash(title)) % 99999
+
+    image_url = (
+        f"https://image.pollinations.ai/prompt/{encoded_prompt}"
+        f"?width=1200&height=630&nologo=true&seed={seed}"
+    )
+
+    try:
+        resp = requests.get(image_url, timeout=60)
+        resp.raise_for_status()
+        print(f"  Image generated! ({len(resp.content) // 1024} KB)")
+        return resp.content
+    except Exception as e:
+        print(f"  Image generation failed: {e}")
+        return None
+
+
+def post_to_facebook(caption, image_data=None):
+    if image_data:
+        # Post with image using /photos endpoint
+        print("  Posting with image...")
+        url = f"https://graph.facebook.com/v19.0/{PAGE_ID}/photos"
+        payload = {
+            "caption": caption,
+            "access_token": ACCESS_TOKEN,
+        }
+        files = {"source": ("image.jpg", image_data, "image/jpeg")}
+        response = requests.post(url, data=payload, files=files)
+    else:
+        # Fallback: text-only post
+        print("  Posting text only (no image)...")
+        url = f"https://graph.facebook.com/v19.0/{PAGE_ID}/feed"
+        payload = {
+            "message": caption,
+            "access_token": ACCESS_TOKEN,
+        }
+        response = requests.post(url, data=payload)
+
     result = response.json()
 
     if "id" in result:
@@ -142,7 +183,8 @@ if __name__ == "__main__":
     print(f"Posting: {article['title']}")
 
     caption = make_caption(article)
-    post_to_facebook(caption)
+    image_data = generate_image(article["title"])
+    post_to_facebook(caption, image_data)
 
     posted.append(article["url"])
     save_posted(posted)
