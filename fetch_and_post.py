@@ -195,10 +195,16 @@ def groq_generate_caption_and_prompt(title, article_text, source="Google News"):
                         "   - 6–8 relevant hashtags on the last line.\n"
                         "   Total length: 280–380 words.\n\n"
 
-                        "3. 'image_prompt' — A vivid, cinematic Stable Diffusion prompt that visually represents "
-                        "the article topic. Describe specific objects, lighting, environment, and mood. "
+                        "3. 'image_prompt' — A HYPER-REALISTIC, professional photography prompt that visually represents "
+                        "the article topic, as if shot by an award-winning editorial photographer for a magazine cover. "
+                        "Describe a real-world photographic scene: specific real subjects, real materials, realistic textures, "
+                        "professional studio or environmental lighting, and a believable, grounded setting. "
+                        "Favor authentic real-life scenes (real people, real offices, real devices, real hands) over abstract "
+                        "glowing sci-fi 'neural network' or 'floating hologram' clichés. "
                         "Absolutely NO text, letters, numbers, logos, or watermarks in the scene. "
-                        "Under 75 words. End with: photorealistic, cinematic lighting, 4k ultra HD, highly detailed.\n\n"
+                        "Under 75 words. End with EXACTLY: hyper-realistic, photorealistic, shot on Canon EOS R5, 85mm f/1.4 lens, "
+                        "professional editorial photography, natural soft lighting, ultra-detailed, tack sharp focus, 8k, lifelike, "
+                        "realistic skin and material texture, shallow depth of field.\n\n"
 
                         "CRITICAL: Output ONLY valid JSON. No markdown fences, no preamble, no extra text. "
                         "Start your response with '{' and end with '}'."
@@ -304,8 +310,11 @@ def groq_generate_caption_and_prompt(title, article_text, source="Google News"):
     )
     headline = title[:60].upper()
     image_prompt = (
-        f"{title}, futuristic technology concept, glowing neural networks, "
-        f"cinematic lighting, 4k ultra HD, photorealistic, highly detailed"
+        f"A realistic professional editorial photograph representing: {title}. "
+        f"Real-world scene with authentic subjects, real environment, and natural professional lighting. "
+        f"hyper-realistic, photorealistic, shot on Canon EOS R5, 85mm f/1.4 lens, "
+        f"professional editorial photography, natural soft lighting, ultra-detailed, tack sharp focus, "
+        f"8k, lifelike, realistic skin and material texture, shallow depth of field"
     )
     return caption, image_prompt, headline
 
@@ -411,12 +420,25 @@ def generate_image(prompt):
     """Use Pollinations.ai to generate image — free, reliable, no API key needed."""
     print("Generating image with Pollinations.ai...")
     try:
-        full_prompt = f"{prompt} --no text, letters, words, logos, watermarks"
+        # Push hard toward a real-photo look and steer away from fake/CGI artifacts.
+        quality_boost = (
+            ", award-winning photojournalism, RAW photo, real photograph, natural realistic colors, "
+            "physically accurate lighting, fine detail, high dynamic range"
+        )
+        negative = (
+            "text, letters, words, captions, logos, watermarks, signature, "
+            "cartoon, anime, illustration, drawing, painting, 3d render, cgi, video game, "
+            "plastic skin, waxy skin, deformed, distorted, extra fingers, mutated hands, "
+            "blurry, low quality, oversaturated, neon, fake, artificial looking, uncanny"
+        )
+        full_prompt = f"{prompt}{quality_boost}"
         encoded_prompt = urllib.parse.quote(full_prompt)
+        encoded_negative = urllib.parse.quote(negative)
         seed = int(datetime.now().timestamp()) % 99999
         image_url = (
             f"https://image.pollinations.ai/prompt/{encoded_prompt}"
             f"?width=1200&height=630&nologo=true&seed={seed}&model=flux"
+            f"&enhance=true&negative_prompt={encoded_negative}"
         )
         print(f"  Image URL: {image_url[:100]}...")
         resp = requests.get(image_url, timeout=90)
