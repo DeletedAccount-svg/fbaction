@@ -3,6 +3,7 @@ import os
 import json
 import re
 import random
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime
 import urllib.parse
@@ -23,6 +24,7 @@ except ImportError:
 PAGE_ID = os.environ["FB_PAGE_ID"]
 ACCESS_TOKEN = os.environ["FB_ACCESS_TOKEN"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
+REPLICATE_API_KEY = os.environ["REPLICATE_API_KEY"]
 
 # Google News RSS - trending AI news
 GOOGLE_NEWS_RSS = "https://news.google.com/rss/search?q=artificial+intelligence&hl=en-US&gl=US&ceid=US:en"
@@ -417,69 +419,111 @@ def add_text_overlay(image_path, headline, source=""):
 
 
 def generate_image(prompt):
-    """Use Pollinations.ai to generate image — free, reliable, no API key needed."""
-    print("Generating image with Pollinations.ai...")
+    """Use Replicate FLUX 2 Pro to generate a high-quality image."""
+    print("Generating image with Replicate FLUX 2 Pro...")
+    TARGET_W, TARGET_H = 1200, 630
+
+    quality_boost = (
+        ", wide horizontal cinematic banner composition, balanced framing with negative space, "
+        "rule of thirds, environmental shot (not an extreme close-up), correct natural proportions, "
+        "award-winning photojournalism, RAW photo, real photograph, natural realistic colors, "
+        "physically accurate lighting, fine detail, high dynamic range"
+    )
+    full_prompt = f"{prompt}{quality_boost}"
+
     try:
-        # Push hard toward a real-photo look and steer away from fake/CGI artifacts.
-        # Composition cues fix the "stretched/cramped" look on a wide banner.
-        quality_boost = (
-            ", wide horizontal cinematic banner composition, balanced framing with negative space, "
-            "rule of thirds, environmental shot (not an extreme close-up), correct natural proportions, "
-            "award-winning photojournalism, RAW photo, real photograph, natural realistic colors, "
-            "physically accurate lighting, fine detail, high dynamic range"
+        # --- Step 1: Submit prediction to Replicate ---
+        headers = {
+            "Authorization": f"Bearer {REPLICATE_API_KEY}",
+            "Content-Type": "application/json",
+            "Prefer": "wait"  # Wait up to 60s for result inline (avoids polling loop)
+        }
+        body = {
+            "input": {
+                "prompt": full_prompt,
+                "aspect_ratio": "16:9",        # Closest to Facebook 1200x630
+                "output_format": "jpg",
+                "output_quality": 92,
+                "safety_tolerance": 2,          # 1–6; 2 = conservative, good for brand pages
+                "prompt_upsampling": True        # FLUX 2 Pro feature — enhances prompt detail
+            }
+        }
+        print("  Submitting to Replicate (this may take 15–45s)...")
+        resp = requests.post(
+            "https://api.replicate.com/v1/models/black-forest-labs/flux-2-pro/predictions",
+            headers=headers,
+            json=body,
+            timeout=120
         )
-        negative = (
-            "text, letters, words, captions, logos, watermarks, signature, "
-            "cartoon, anime, illustration, drawing, painting, 3d render, cgi, video game, "
-            "plastic skin, waxy skin, deformed, distorted, extra fingers, mutated hands, "
-            "blurry, low quality, oversaturated, neon, fake, artificial looking, uncanny"
-        )
-        full_prompt = f"{prompt}{quality_boost}"
-        encoded_prompt = urllib.parse.quote(full_prompt)
-        encoded_negative = urllib.parse.quote(negative)
-        seed = int(datetime.now().timestamp()) % 99999
-        # Generate at a clean 16:9 resolution that Flux composes well for (1280x720),
-        # then center-crop to the exact 1200x630 Facebook size. This avoids the
-        # "stretched/squished" look caused by asking Flux for an odd aspect ratio.
-        GEN_W, GEN_H = 1280, 720
-        TARGET_W, TARGET_H = 1200, 630
-        image_url = (
-            f"https://image.pollinations.ai/prompt/{encoded_prompt}"
-            f"?width={GEN_W}&height={GEN_H}&nologo=true&seed={seed}&model=flux"
-            f"&enhance=true&negative_prompt={encoded_negative}"
-        )
-        print(f"  Image URL: {image_url[:100]}...")
-        resp = requests.get(image_url, timeout=90)
         resp.raise_for_status()
+        prediction = resp.json()
 
-        if resp.headers.get("content-type", "").startswith("image"):
-            raw_path = "/tmp/post_image_raw.jpg"
-            with open(raw_path, "wb") as f:
-                f.write(resp.content)
-            print(f"  Image saved! ({len(resp.content)} bytes)")
+        # --- Step 2: If not done yet (no Prefer:wait support), poll ---
+        status = prediction.get("status")
+        poll_url = prediction.get("urls", {}).get("get")
+        max_polls = 30
+        poll_count = 0
 
-            # --- Crop to exact 1200x630 without stretching (cover-fit + center crop) ---
-            path = "/tmp/post_image.jpg"
-            try:
-                img = Image.open(raw_path).convert("RGB")
-                src_w, src_h = img.size
-                scale = max(TARGET_W / src_w, TARGET_H / src_h)
-                new_w, new_h = int(src_w * scale + 0.5), int(src_h * scale + 0.5)
-                img = img.resize((new_w, new_h), Image.LANCZOS)
-                left = (new_w - TARGET_W) // 2
-                top = (new_h - TARGET_H) // 2
-                img = img.crop((left, top, left + TARGET_W, top + TARGET_H))
-                img.save(path, "JPEG", quality=92)
-                print(f"  ✅ Cropped cleanly to {TARGET_W}x{TARGET_H} (no stretch)")
-            except Exception as crop_err:
-                print(f"  ⚠️ Crop failed ({crop_err}); using raw image")
-                path = raw_path
-            return path
-        else:
-            print(f"  Not an image: {resp.headers.get('content-type')}")
+        while status not in ("succeeded", "failed", "canceled") and poll_url and poll_count < max_polls:
+            print(f"  Polling... status={status} ({poll_count + 1}/{max_polls})")
+            time.sleep(3)
+            poll_resp = requests.get(poll_url, headers=headers, timeout=30)
+            poll_resp.raise_for_status()
+            prediction = poll_resp.json()
+            status = prediction.get("status")
+            poll_count += 1
+
+        if status != "succeeded":
+            print(f"  ❌ Replicate prediction failed or timed out. Status: {status}")
+            error_detail = prediction.get("error") or prediction.get("logs", "")
+            print(f"  Error detail: {error_detail}")
             return None
+
+        # --- Step 3: Get the image URL from output ---
+        output = prediction.get("output")
+        if isinstance(output, list):
+            image_url = output[0]
+        elif isinstance(output, str):
+            image_url = output
+        else:
+            print(f"  ❌ Unexpected output format: {output}")
+            return None
+
+        print(f"  ✅ Image generated! Downloading from: {image_url[:80]}...")
+
+        # --- Step 4: Download the image ---
+        img_resp = requests.get(image_url, timeout=60)
+        img_resp.raise_for_status()
+
+        raw_path = "/tmp/post_image_raw.jpg"
+        with open(raw_path, "wb") as f:
+            f.write(img_resp.content)
+        print(f"  Downloaded! ({len(img_resp.content):,} bytes)")
+
+        # --- Step 5: Center-crop to exact 1200x630 (cover-fit, no stretch) ---
+        path = "/tmp/post_image.jpg"
+        try:
+            img = Image.open(raw_path).convert("RGB")
+            src_w, src_h = img.size
+            scale = max(TARGET_W / src_w, TARGET_H / src_h)
+            new_w, new_h = int(src_w * scale + 0.5), int(src_h * scale + 0.5)
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+            left = (new_w - TARGET_W) // 2
+            top = (new_h - TARGET_H) // 2
+            img = img.crop((left, top, left + TARGET_W, top + TARGET_H))
+            img.save(path, "JPEG", quality=92)
+            print(f"  ✅ Cropped cleanly to {TARGET_W}x{TARGET_H} (no stretch)")
+        except Exception as crop_err:
+            print(f"  ⚠️ Crop failed ({crop_err}); using raw image")
+            path = raw_path
+
+        return path
+
+    except requests.exceptions.HTTPError as e:
+        print(f"  ❌ Replicate HTTP error: {e.response.status_code} — {e.response.text[:300]}")
+        return None
     except Exception as e:
-        print(f"  Pollinations error: {e}")
+        print(f"  ❌ Replicate error: {e}")
         return None
 
 
