@@ -337,14 +337,14 @@ def add_text_overlay(image_path, headline, source=""):
         overlay = Image.new("RGBA", (w, h), (0, 0, 0, 0))
         draw_ov = ImageDraw.Draw(overlay)
 
-        # Top branding bar (semi-transparent)
-        draw_ov.rectangle([(0, 0), (w, 58)], fill=(0, 0, 0, 170))
+        # Top branding bar (subtle semi-transparent)
+        draw_ov.rectangle([(0, 0), (w, 58)], fill=(0, 0, 0, 120))
 
-        # Bottom gradient band (bottom 42% of image)
-        band_top = int(h * 0.58)
+        # Bottom gradient band (bottom 30% of image) — lighter, softer fade
+        band_top = int(h * 0.70)
         for y in range(band_top, h):
             progress = (y - band_top) / (h - band_top)
-            alpha = int(180 + 65 * progress)  # ramps from 180 → 245
+            alpha = int(80 + 100 * progress)  # ramps from 80 → 180 (much lighter!)
             draw_ov.line([(0, y), (w, y)], fill=(0, 0, 0, alpha))
 
         # Composite overlay onto image
@@ -410,7 +410,7 @@ def add_text_overlay(image_path, headline, source=""):
         # Measure total block height
         line_h = font_headline.getbbox("Ag")[3] + 12
         total_text_h = line_h * len(lines)
-        y_start = int(h * 0.60) + max(0, (int(h * 0.32) - total_text_h) // 2)
+        y_start = int(h * 0.72) + max(0, (int(h * 0.20) - total_text_h) // 2)
 
         for line in lines:
             bbox = draw.textbbox((0, 0), line, font=font_headline)
