@@ -364,29 +364,51 @@ def add_text_overlay(image_path, headline, source=""):
             "C:/Windows/Fonts/arialbd.ttf",
             "C:/Windows/Fonts/arial.ttf",
         ]
+        chosen_font_path = None
         for fp in font_candidates:
             if os.path.exists(fp):
-                font_headline = ImageFont.truetype(fp, size=58)
+                chosen_font_path = fp
                 font_brand   = ImageFont.truetype(fp, size=28)
                 font_source  = ImageFont.truetype(fp, size=22)
                 print(f"  Using font: {fp}")
                 break
 
-        if not font_headline:
+        if not chosen_font_path:
             print("  ⚠️ No TTF font found, using PIL default (small)")
             font_headline = ImageFont.load_default()
             font_brand    = font_headline
             font_source   = font_headline
+            lines = textwrap.wrap(headline, width=40)[:4]
+        else:
+            # --- Auto-fit font size so headline never overflows ---
+            PADDING = 60          # px left+right safe zone
+            MAX_W   = w - PADDING * 2
+            MAX_LINES = 4
+
+            # Start large, shrink until all lines fit within MAX_W
+            for font_size in range(52, 22, -2):
+                font_headline = ImageFont.truetype(chosen_font_path, size=font_size)
+                # Wrap generously first, then check pixel width
+                test_lines = textwrap.wrap(headline, width=60)[:MAX_LINES]
+                too_wide = any(
+                    draw.textbbox((0, 0), ln, font=font_headline)[2] > MAX_W
+                    for ln in test_lines
+                )
+                if not too_wide:
+                    lines = test_lines
+                    print(f"  Font size chosen: {font_size}px ({len(lines)} lines)")
+                    break
+            else:
+                # Absolute fallback — tiny font, just make it fit
+                font_headline = ImageFont.truetype(chosen_font_path, size=24)
+                lines = textwrap.wrap(headline, width=60)[:MAX_LINES]
 
         # --- Brand bar top-left ---
         draw.text((22, 14), "⚡ AI Academy @ ranksorcery.com", font=font_brand, fill=(255, 255, 255, 255))
 
         # --- Headline text (centered, wrapped, bottom area) ---
-        max_chars_per_line = max(12, int(w / 36))
-        lines = textwrap.wrap(headline, width=max_chars_per_line)[:4]  # max 4 lines
-
         # Measure total block height
-        line_h = font_headline.getbbox("Ag")[3] + 10
+        line_h = font_headline.getbbox("Ag")[3] + 12
         total_text_h = line_h * len(lines)
         y_start = int(h * 0.60) + max(0, (int(h * 0.32) - total_text_h) // 2)
 
