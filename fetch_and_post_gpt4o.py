@@ -439,10 +439,11 @@ def add_text_overlay(image_path, headline, source=""):
         return image_path
 
 
+
 def generate_image(prompt):
-    """Use GPT-4o image generation via BluesMinds API to generate a high-quality image."""
+    """Use image generation via BluesMinds API (tries dall-e-3, then gpt-image-1, then dall-e-2)."""
     import base64
-    print("Generating image with GPT-4o via BluesMinds API...")
+    print("Generating image via BluesMinds API...")
     TARGET_W, TARGET_H = 1200, 630
 
     quality_boost = (
@@ -453,39 +454,52 @@ def generate_image(prompt):
     )
     full_prompt = f"{prompt}{quality_boost}"
 
+    headers = {
+        "Authorization": f"Bearer {BLUESMINDS_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    # Try these models in order until one works
+    image_models = [
+        {"model": "dall-e-3",    "size": "1792x1024", "quality": "hd",   "response_format": "b64_json"},
+        {"model": "gpt-image-1", "size": "1536x1024", "quality": "high", "response_format": "b64_json"},
+        {"model": "dall-e-3",    "size": "1792x1024", "quality": "hd",   "response_format": "url"},
+        {"model": "dall-e-2",    "size": "1024x1024",                    "response_format": "b64_json"},
+    ]
+
+    resp = None
+    result = None
+    for attempt in image_models:
+        model_name = attempt["model"]
+        body = {"prompt": full_prompt, "n": 1, **attempt}
+        print(f"  Trying model '{model_name}' ({attempt.get('size', '')})...")
+        try:
+            resp = requests.post(
+                f"{BLUESMINDS_BASE_URL}/v1/images/generations",
+                headers=headers,
+                json=body,
+                timeout=120
+            )
+            print(f"  BluesMinds HTTP status: {resp.status_code}")
+            if resp.ok:
+                result = resp.json()
+                print(f"  ✅ Model '{model_name}' accepted!")
+                break
+            else:
+                print(f"  ❌ Model '{model_name}' rejected: {resp.text[:300]}")
+        except Exception as e:
+            print(f"  ❌ Model '{model_name}' exception: {e}")
+
+    if not result:
+        print("  ❌ All image models failed.")
+        if resp is not None:
+            print(f"  Last response: {resp.text[:500]}")
+        return None
+
     try:
-        headers = {
-            "Authorization": f"Bearer {BLUESMINDS_API_KEY}",
-            "Content-Type": "application/json"
-        }
-        body = {
-            "model": "gpt-4o",
-            "prompt": full_prompt,
-            "n": 1,
-            "size": "1792x1024",      # Closest landscape size to Facebook 1200x630
-            "quality": "hd",
-            "response_format": "b64_json"  # Get base64 so we don't need a second download request
-        }
-
-        print("  Submitting image request to BluesMinds GPT-4o (this may take 15–45s)...")
-        resp = requests.post(
-            f"{BLUESMINDS_BASE_URL}/v1/images/generations",
-            headers=headers,
-            json=body,
-            timeout=120
-        )
-
-        print(f"  BluesMinds HTTP status: {resp.status_code}")
-        if not resp.ok:
-            print(f"  ❌ BluesMinds error response: {resp.text[:500]}")
-            resp.raise_for_status()
-
-        result = resp.json()
-
-        # --- Extract base64 image data ---
+        # --- Extract base64 or URL image data ---
         image_data = result.get("data", [{}])[0].get("b64_json")
         if not image_data:
-            # Fallback: try url field if b64_json not present
             image_url = result.get("data", [{}])[0].get("url")
             if image_url:
                 print(f"  Downloading image from URL: {image_url[:80]}...")
@@ -523,9 +537,6 @@ def generate_image(prompt):
 
         return path
 
-    except requests.exceptions.HTTPError as e:
-        print(f"  ❌ BluesMinds HTTP error: {e.response.status_code} — {e.response.text[:300]}")
-        return None
     except Exception as e:
         print(f"  ❌ BluesMinds image generation error: {e}")
         return None
