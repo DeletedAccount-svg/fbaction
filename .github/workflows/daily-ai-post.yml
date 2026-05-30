@@ -4,19 +4,17 @@ on:
     - cron: '0 23 * * *'  # 7AM Manila (GMT+8)
     - cron: '0 16 * * *'  # 12AM Manila (GMT+8, midnight)
     - cron: '0 9 * * *'   # 5PM Manila (GMT+8)
-  workflow_dispatch:       # Also allow manual trigger anytime
+  workflow_dispatch:
 jobs:
   post-ai-news:
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # Needed to save posted_urls.json back to repo
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true  # Fix: opt into Node.js 24 (Node.js 20 deprecated June 2026)
+      contents: write
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4.2.2
+        uses: actions/checkout@v5          # 🦴 WAS v4.2.2 — now Node 24 native!
       - name: Setup Python
-        uses: actions/setup-python@v5.6.0
+        uses: actions/setup-python@v6      # 🦴 WAS v5.6.0 — now Node 24 native!
         with:
           python-version: '3.11'
       - name: Install dependencies
