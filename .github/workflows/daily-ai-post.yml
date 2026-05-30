@@ -12,9 +12,9 @@ jobs:
       contents: write
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v5          # 🦴 WAS v4.2.2 — now Node 24 native!
+        uses: actions/checkout@v5
       - name: Setup Python
-        uses: actions/setup-python@v6      # 🦴 WAS v5.6.0 — now Node 24 native!
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
       - name: Install dependencies
@@ -23,9 +23,8 @@ jobs:
         env:
           FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
           FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          REPLICATE_API_KEY: ${{ secrets.REPLICATE_API_KEY }}
-        run: python fetch_and_post.py
+          BLUESMINDS_API_KEY: ${{ secrets.BLUESMINDS_API_KEY }}
+        run: python fetch_and_post_gpt4o.py
       - name: Save posted URLs back to repo
         run: |
           git config user.name "github-actions[bot]"
