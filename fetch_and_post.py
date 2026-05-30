@@ -465,7 +465,7 @@ def generate_image(prompt):
                 "output_format": "jpg",
                 "output_quality": 92,
                 "safety_tolerance": 2,          # 1–6; 2 = conservative, good for brand pages
-                "prompt_upsampling": True        # FLUX 2 Pro feature — enhances prompt detail
+                # ✅ FIX: removed "prompt_upsampling" — not a valid flux-2-pro parameter, caused 422 errors
             }
         }
         print("  Submitting to Replicate (this may take 15–45s)...")
@@ -475,7 +475,13 @@ def generate_image(prompt):
             json=body,
             timeout=120
         )
-        resp.raise_for_status()
+
+        # Always log the HTTP status for debugging
+        print(f"  Replicate HTTP status: {resp.status_code}")
+        if not resp.ok:
+            print(f"  ❌ Replicate error response: {resp.text[:500]}")
+            resp.raise_for_status()
+
         prediction = resp.json()
 
         # --- Step 2: If not done yet (no Prefer:wait support), poll ---
