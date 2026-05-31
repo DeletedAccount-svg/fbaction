@@ -21,13 +21,23 @@ except ImportError:
     from PIL import Image, ImageDraw, ImageFont
     print("✅ Pillow installed successfully.")
 
+# Auto-install huggingface_hub if not available
+try:
+    from huggingface_hub import InferenceClient
+    print("✅ huggingface_hub already installed.")
+except ImportError:
+    print("📦 huggingface_hub not found — installing now...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "huggingface_hub", "--quiet"])
+    from huggingface_hub import InferenceClient
+    print("✅ huggingface_hub installed successfully.")
+
 PAGE_ID = os.environ["FB_PAGE_ID"]
 ACCESS_TOKEN = os.environ["FB_ACCESS_TOKEN"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 HF_API_KEY = os.environ["HF_API_KEY"]  # Hugging Face token (hf_...)
 
-# Hugging Face FLUX.1-dev Inference API
-HF_MODEL_URL = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-dev"
+# Hugging Face model ID (used via InferenceClient — no manual URL needed)
+HF_MODEL_ID = "black-forest-labs/FLUX.1-dev"
 
 # How long to wait (seconds) after image is ready before posting to Facebook.
 # HF can be slow; this also gives Facebook's API a breather. 🐢
@@ -447,9 +457,10 @@ def add_text_overlay(image_path, headline, source=""):
 
 def generate_image(prompt):
     """
-    Generate a high-quality image using Hugging Face FLUX.1-dev Inference API.
-    - Retries automatically if the model is still loading (cold start).
-    - Downloads the raw image bytes, then center-crops to 1200x630 for Facebook.
+    Generate a high-quality image using Hugging Face InferenceClient (huggingface_hub).
+    Uses the official HF library so routing/endpoints are always up-to-date.
+    Retries automatically on cold-start or rate-limit errors.
+    Center-crops the result to 1200x630 for Facebook.
     """
     print("🎨 Generating image with Hugging Face FLUX.1-dev...")
     TARGET_W, TARGET_H = 1200, 630
@@ -462,108 +473,49 @@ def generate_image(prompt):
     )
     full_prompt = f"{prompt}{quality_boost}"
 
-    headers = {
-        "Authorization": f"Bearer {HF_API_KEY}",
-        "Content-Type": "application/json",
-        "x-wait-for-model": "true"   # Ask HF to wait for cold-start instead of returning 503
-    }
-    payload = {
-        "inputs": full_prompt,
-        "parameters": {
-            "width": 1344,           # 16:9-ish; closest supported size to 1200x630
-            "height": 768,
-            "num_inference_steps": 28,
-            "guidance_scale": 3.5
-        }
-    }
-
     MAX_RETRIES = 6
-    RETRY_DELAY = 30   # seconds to wait between retries on model-loading / rate-limit
+    RETRY_DELAY = 45  # seconds — FLUX.1-dev cold start can take a while
+
+    client = InferenceClient(provider="hf-inference", api_key=HF_API_KEY)
 
     for attempt in range(1, MAX_RETRIES + 1):
-        print(f"  Attempt {attempt}/{MAX_RETRIES} — calling HF Inference API...")
+        print(f"  Attempt {attempt}/{MAX_RETRIES} — calling HF InferenceClient...")
         try:
-            resp = requests.post(
-                HF_MODEL_URL,
-                headers=headers,
-                json=payload,
-                timeout=180   # FLUX.1-dev can take up to ~2 min on cold start
+            pil_image = client.text_to_image(
+                full_prompt,
+                model=HF_MODEL_ID,
+                width=1344,
+                height=768,
             )
 
-            # ── Model still loading ──────────────────────────────────────────
-            if resp.status_code == 503:
-                try:
-                    err_body = resp.json()
-                    estimated = err_body.get("estimated_time", RETRY_DELAY)
-                except Exception:
-                    estimated = RETRY_DELAY
-                wait = max(int(estimated) + 5, RETRY_DELAY)
-                print(f"  ⏳ Model is loading on HF servers (estimated {estimated:.0f}s). "
-                      f"Waiting {wait}s before retry...")
-                time.sleep(wait)
-                continue
-
-            # ── Rate limited ─────────────────────────────────────────────────
-            if resp.status_code == 429:
-                print(f"  ⚠️  Rate limited by HF. Waiting {RETRY_DELAY}s...")
-                time.sleep(RETRY_DELAY)
-                continue
-
-            # ── Other HTTP error ─────────────────────────────────────────────
-            if not resp.ok:
-                print(f"  ❌ HF API error {resp.status_code}: {resp.text[:300]}")
-                if attempt < MAX_RETRIES:
-                    print(f"  Retrying in {RETRY_DELAY}s...")
-                    time.sleep(RETRY_DELAY)
-                    continue
-                else:
-                    return None
-
-            # ── Success — response body is raw image bytes ───────────────────
-            content_type = resp.headers.get("Content-Type", "")
-            if "image" not in content_type and len(resp.content) < 1000:
-                # Probably got a JSON error even with 200
-                print(f"  ⚠️ Unexpected response (Content-Type: {content_type}): {resp.text[:200]}")
-                if attempt < MAX_RETRIES:
-                    time.sleep(RETRY_DELAY)
-                    continue
-                return None
-
-            print(f"  ✅ Image received! ({len(resp.content):,} bytes)")
-
-            # Save raw image
-            raw_path = "/tmp/post_image_raw.jpg"
-            with open(raw_path, "wb") as f:
-                f.write(resp.content)
+            print(f"  ✅ Image received! Size: {pil_image.size}")
 
             # Center-crop to exact 1200x630 (cover-fit, no stretch)
             path = "/tmp/post_image.jpg"
-            try:
-                img = Image.open(raw_path).convert("RGB")
-                src_w, src_h = img.size
-                print(f"  Raw image size: {src_w}x{src_h}")
-                scale = max(TARGET_W / src_w, TARGET_H / src_h)
-                new_w = int(src_w * scale + 0.5)
-                new_h = int(src_h * scale + 0.5)
-                img = img.resize((new_w, new_h), Image.LANCZOS)
-                left = (new_w - TARGET_W) // 2
-                top  = (new_h - TARGET_H) // 2
-                img = img.crop((left, top, left + TARGET_W, top + TARGET_H))
-                img.save(path, "JPEG", quality=92)
-                print(f"  ✅ Cropped cleanly to {TARGET_W}x{TARGET_H}")
-            except Exception as crop_err:
-                print(f"  ⚠️ Crop failed ({crop_err}); using raw image")
-                path = raw_path
-
+            img = pil_image.convert("RGB")
+            src_w, src_h = img.size
+            scale = max(TARGET_W / src_w, TARGET_H / src_h)
+            new_w = int(src_w * scale + 0.5)
+            new_h = int(src_h * scale + 0.5)
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+            left = (new_w - TARGET_W) // 2
+            top  = (new_h - TARGET_H) // 2
+            img = img.crop((left, top, left + TARGET_W, top + TARGET_H))
+            img.save(path, "JPEG", quality=92)
+            print(f"  ✅ Cropped cleanly to {TARGET_W}x{TARGET_H}")
             return path
 
-        except requests.exceptions.Timeout:
-            print(f"  ⏱️  Request timed out (attempt {attempt}/{MAX_RETRIES}).")
-            if attempt < MAX_RETRIES:
-                print(f"  Retrying in {RETRY_DELAY}s...")
-                time.sleep(RETRY_DELAY)
         except Exception as e:
-            print(f"  ❌ Unexpected error: {e}")
+            err_str = str(e).lower()
+            # Model loading / cold start
+            if "loading" in err_str or "503" in err_str or "unavailable" in err_str:
+                print(f"  ⏳ Model is still loading on HF servers. Waiting {RETRY_DELAY}s...")
+            # Rate limited
+            elif "429" in err_str or "rate" in err_str:
+                print(f"  ⚠️  Rate limited by HF. Waiting {RETRY_DELAY}s...")
+            else:
+                print(f"  ❌ Unexpected error: {e}")
+
             if attempt < MAX_RETRIES:
                 print(f"  Retrying in {RETRY_DELAY}s...")
                 time.sleep(RETRY_DELAY)
