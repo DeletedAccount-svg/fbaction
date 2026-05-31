@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install dependencies
-        run: pip install requests pillow
+        run: pip install requests pillow huggingface_hub
       - name: Fetch and post AI news to Facebook
         env:
           FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
