@@ -25,6 +25,7 @@ jobs:
           FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
           BLUESMINDS_API_KEY: ${{ secrets.BLUESMINDS_API_KEY }}
           HF_API_KEY: ${{ secrets.HF_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
         run: python fetch_and_post.py
       - name: Save posted URLs back to repo
         run: |
