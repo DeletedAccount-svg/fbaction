@@ -24,7 +24,14 @@ except ImportError:
 PAGE_ID = os.environ["FB_PAGE_ID"]
 ACCESS_TOKEN = os.environ["FB_ACCESS_TOKEN"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
-REPLICATE_API_KEY = os.environ["REPLICATE_API_KEY"]
+HF_API_KEY = os.environ["HF_API_KEY"]  # Hugging Face token (hf_...)
+
+# Hugging Face FLUX.1-dev Inference API
+HF_MODEL_URL = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-dev"
+
+# How long to wait (seconds) after image is ready before posting to Facebook.
+# HF can be slow; this also gives Facebook's API a breather. 🐢
+FB_POST_DELAY = 30
 
 # Google News RSS - trending AI news
 GOOGLE_NEWS_RSS = "https://news.google.com/rss/search?q=artificial+intelligence&hl=en-US&gl=US&ceid=US:en"
@@ -439,8 +446,12 @@ def add_text_overlay(image_path, headline, source=""):
 
 
 def generate_image(prompt):
-    """Use Replicate FLUX 2 Pro to generate a high-quality image."""
-    print("Generating image with Replicate FLUX 2 Pro...")
+    """
+    Generate a high-quality image using Hugging Face FLUX.1-dev Inference API.
+    - Retries automatically if the model is still loading (cold start).
+    - Downloads the raw image bytes, then center-crops to 1200x630 for Facebook.
+    """
+    print("🎨 Generating image with Hugging Face FLUX.1-dev...")
     TARGET_W, TARGET_H = 1200, 630
 
     quality_boost = (
@@ -451,111 +462,122 @@ def generate_image(prompt):
     )
     full_prompt = f"{prompt}{quality_boost}"
 
-    try:
-        # --- Step 1: Submit prediction to Replicate ---
-        headers = {
-            "Authorization": f"Bearer {REPLICATE_API_KEY}",
-            "Content-Type": "application/json",
-            "Prefer": "wait"  # Wait up to 60s for result inline (avoids polling loop)
+    headers = {
+        "Authorization": f"Bearer {HF_API_KEY}",
+        "Content-Type": "application/json",
+        "x-wait-for-model": "true"   # Ask HF to wait for cold-start instead of returning 503
+    }
+    payload = {
+        "inputs": full_prompt,
+        "parameters": {
+            "width": 1344,           # 16:9-ish; closest supported size to 1200x630
+            "height": 768,
+            "num_inference_steps": 28,
+            "guidance_scale": 3.5
         }
-        body = {
-            "input": {
-                "prompt": full_prompt,
-                "aspect_ratio": "16:9",        # Closest to Facebook 1200x630
-                "output_format": "jpg",
-                "output_quality": 92,
-                "safety_tolerance": 2,          # 1–6; 2 = conservative, good for brand pages
-                # ✅ FIX: removed "prompt_upsampling" — not a valid flux-2-pro parameter, caused 422 errors
-            }
-        }
-        print("  Submitting to Replicate (this may take 15–45s)...")
-        resp = requests.post(
-            "https://api.replicate.com/v1/models/black-forest-labs/flux-2-pro/predictions",
-            headers=headers,
-            json=body,
-            timeout=120
-        )
+    }
 
-        # Always log the HTTP status for debugging
-        print(f"  Replicate HTTP status: {resp.status_code}")
-        if not resp.ok:
-            print(f"  ❌ Replicate error response: {resp.text[:500]}")
-            resp.raise_for_status()
+    MAX_RETRIES = 6
+    RETRY_DELAY = 30   # seconds to wait between retries on model-loading / rate-limit
 
-        prediction = resp.json()
-
-        # --- Step 2: If not done yet (no Prefer:wait support), poll ---
-        status = prediction.get("status")
-        poll_url = prediction.get("urls", {}).get("get")
-        max_polls = 30
-        poll_count = 0
-
-        while status not in ("succeeded", "failed", "canceled") and poll_url and poll_count < max_polls:
-            print(f"  Polling... status={status} ({poll_count + 1}/{max_polls})")
-            time.sleep(3)
-            poll_resp = requests.get(poll_url, headers=headers, timeout=30)
-            poll_resp.raise_for_status()
-            prediction = poll_resp.json()
-            status = prediction.get("status")
-            poll_count += 1
-
-        if status != "succeeded":
-            print(f"  ❌ Replicate prediction failed or timed out. Status: {status}")
-            error_detail = prediction.get("error") or prediction.get("logs", "")
-            print(f"  Error detail: {error_detail}")
-            return None
-
-        # --- Step 3: Get the image URL from output ---
-        output = prediction.get("output")
-        if isinstance(output, list):
-            image_url = output[0]
-        elif isinstance(output, str):
-            image_url = output
-        else:
-            print(f"  ❌ Unexpected output format: {output}")
-            return None
-
-        print(f"  ✅ Image generated! Downloading from: {image_url[:80]}...")
-
-        # --- Step 4: Download the image ---
-        img_resp = requests.get(image_url, timeout=60)
-        img_resp.raise_for_status()
-
-        raw_path = "/tmp/post_image_raw.jpg"
-        with open(raw_path, "wb") as f:
-            f.write(img_resp.content)
-        print(f"  Downloaded! ({len(img_resp.content):,} bytes)")
-
-        # --- Step 5: Center-crop to exact 1200x630 (cover-fit, no stretch) ---
-        path = "/tmp/post_image.jpg"
+    for attempt in range(1, MAX_RETRIES + 1):
+        print(f"  Attempt {attempt}/{MAX_RETRIES} — calling HF Inference API...")
         try:
-            img = Image.open(raw_path).convert("RGB")
-            src_w, src_h = img.size
-            scale = max(TARGET_W / src_w, TARGET_H / src_h)
-            new_w, new_h = int(src_w * scale + 0.5), int(src_h * scale + 0.5)
-            img = img.resize((new_w, new_h), Image.LANCZOS)
-            left = (new_w - TARGET_W) // 2
-            top = (new_h - TARGET_H) // 2
-            img = img.crop((left, top, left + TARGET_W, top + TARGET_H))
-            img.save(path, "JPEG", quality=92)
-            print(f"  ✅ Cropped cleanly to {TARGET_W}x{TARGET_H} (no stretch)")
-        except Exception as crop_err:
-            print(f"  ⚠️ Crop failed ({crop_err}); using raw image")
-            path = raw_path
+            resp = requests.post(
+                HF_MODEL_URL,
+                headers=headers,
+                json=payload,
+                timeout=180   # FLUX.1-dev can take up to ~2 min on cold start
+            )
 
-        return path
+            # ── Model still loading ──────────────────────────────────────────
+            if resp.status_code == 503:
+                try:
+                    err_body = resp.json()
+                    estimated = err_body.get("estimated_time", RETRY_DELAY)
+                except Exception:
+                    estimated = RETRY_DELAY
+                wait = max(int(estimated) + 5, RETRY_DELAY)
+                print(f"  ⏳ Model is loading on HF servers (estimated {estimated:.0f}s). "
+                      f"Waiting {wait}s before retry...")
+                time.sleep(wait)
+                continue
 
-    except requests.exceptions.HTTPError as e:
-        print(f"  ❌ Replicate HTTP error: {e.response.status_code} — {e.response.text[:300]}")
-        return None
-    except Exception as e:
-        print(f"  ❌ Replicate error: {e}")
-        return None
+            # ── Rate limited ─────────────────────────────────────────────────
+            if resp.status_code == 429:
+                print(f"  ⚠️  Rate limited by HF. Waiting {RETRY_DELAY}s...")
+                time.sleep(RETRY_DELAY)
+                continue
+
+            # ── Other HTTP error ─────────────────────────────────────────────
+            if not resp.ok:
+                print(f"  ❌ HF API error {resp.status_code}: {resp.text[:300]}")
+                if attempt < MAX_RETRIES:
+                    print(f"  Retrying in {RETRY_DELAY}s...")
+                    time.sleep(RETRY_DELAY)
+                    continue
+                else:
+                    return None
+
+            # ── Success — response body is raw image bytes ───────────────────
+            content_type = resp.headers.get("Content-Type", "")
+            if "image" not in content_type and len(resp.content) < 1000:
+                # Probably got a JSON error even with 200
+                print(f"  ⚠️ Unexpected response (Content-Type: {content_type}): {resp.text[:200]}")
+                if attempt < MAX_RETRIES:
+                    time.sleep(RETRY_DELAY)
+                    continue
+                return None
+
+            print(f"  ✅ Image received! ({len(resp.content):,} bytes)")
+
+            # Save raw image
+            raw_path = "/tmp/post_image_raw.jpg"
+            with open(raw_path, "wb") as f:
+                f.write(resp.content)
+
+            # Center-crop to exact 1200x630 (cover-fit, no stretch)
+            path = "/tmp/post_image.jpg"
+            try:
+                img = Image.open(raw_path).convert("RGB")
+                src_w, src_h = img.size
+                print(f"  Raw image size: {src_w}x{src_h}")
+                scale = max(TARGET_W / src_w, TARGET_H / src_h)
+                new_w = int(src_w * scale + 0.5)
+                new_h = int(src_h * scale + 0.5)
+                img = img.resize((new_w, new_h), Image.LANCZOS)
+                left = (new_w - TARGET_W) // 2
+                top  = (new_h - TARGET_H) // 2
+                img = img.crop((left, top, left + TARGET_W, top + TARGET_H))
+                img.save(path, "JPEG", quality=92)
+                print(f"  ✅ Cropped cleanly to {TARGET_W}x{TARGET_H}")
+            except Exception as crop_err:
+                print(f"  ⚠️ Crop failed ({crop_err}); using raw image")
+                path = raw_path
+
+            return path
+
+        except requests.exceptions.Timeout:
+            print(f"  ⏱️  Request timed out (attempt {attempt}/{MAX_RETRIES}).")
+            if attempt < MAX_RETRIES:
+                print(f"  Retrying in {RETRY_DELAY}s...")
+                time.sleep(RETRY_DELAY)
+        except Exception as e:
+            print(f"  ❌ Unexpected error: {e}")
+            if attempt < MAX_RETRIES:
+                print(f"  Retrying in {RETRY_DELAY}s...")
+                time.sleep(RETRY_DELAY)
+
+    print("  ❌ All HF retries exhausted. Image generation failed.")
+    return None
 
 
 def post_to_facebook_with_image(message, image_path):
     """Post image + caption to Facebook page."""
-    print("Posting to Facebook with image...")
+    print(f"⏳ Waiting {FB_POST_DELAY}s before posting to Facebook (giving HF time to breathe)...")
+    time.sleep(FB_POST_DELAY)
+
+    print("📤 Posting to Facebook with image...")
     url = f"https://graph.facebook.com/v19.0/{PAGE_ID}/photos"
     with open(image_path, "rb") as img:
         response = requests.post(
@@ -565,30 +587,33 @@ def post_to_facebook_with_image(message, image_path):
         )
     result = response.json()
     if "id" in result:
-        print(f"SUCCESS with image! Post ID: {result['id']}")
+        print(f"✅ SUCCESS with image! Post ID: {result['id']}")
         return True
     else:
-        print(f"ERROR posting with image: {result}")
+        print(f"❌ ERROR posting with image: {result}")
         raise Exception(f"Post with image failed: {result}")
 
 
 def post_to_facebook_text_only(message):
     """Fallback: post text only."""
-    print("Posting to Facebook (text only fallback)...")
+    print(f"⏳ Waiting {FB_POST_DELAY}s before posting to Facebook...")
+    time.sleep(FB_POST_DELAY)
+
+    print("📤 Posting to Facebook (text only fallback)...")
     url = f"https://graph.facebook.com/v19.0/{PAGE_ID}/feed"
     payload = {"message": message, "access_token": ACCESS_TOKEN}
     response = requests.post(url, data=payload)
     result = response.json()
     if "id" in result:
-        print(f"SUCCESS text-only! Post ID: {result['id']}")
+        print(f"✅ SUCCESS text-only! Post ID: {result['id']}")
         return True
     else:
-        print(f"ERROR: {result}")
+        print(f"❌ ERROR: {result}")
         raise Exception(f"Post failed: {result}")
 
 
 if __name__ == "__main__":
-    print(f"Starting AI News Poster — {datetime.now()}")
+    print(f"🚀 Starting AI News Poster — {datetime.now()}")
     posted = load_posted()
 
     articles = fetch_google_news()
@@ -603,9 +628,9 @@ if __name__ == "__main__":
         raise Exception("No articles found from Google News!")
 
     article = fresh[0]
-    print(f"\nSelected article: {article['title']}")
-    print(f"URL: {article['url']}")
-    print(f"Source: {article['source']}")
+    print(f"\n📰 Selected article: {article['title']}")
+    print(f"🔗 URL: {article['url']}")
+    print(f"📡 Source: {article['source']}")
 
     # Fetch actual article content for better Groq context
     article_text = fetch_article_content(article["url"])
@@ -621,7 +646,7 @@ if __name__ == "__main__":
     print(f"\n📝 Caption preview:\n{caption[:300]}...\n")
     print(f"🎨 Image prompt: {image_prompt}\n")
 
-    # Generate the base image
+    # Generate the base image via Hugging Face FLUX.1-dev
     image_path = generate_image(image_prompt)
 
     if image_path:
@@ -629,9 +654,9 @@ if __name__ == "__main__":
         image_path = add_text_overlay(image_path, headline, source=article["source"])
         post_to_facebook_with_image(caption, image_path)
     else:
-        print("Image generation failed, posting text only.")
+        print("⚠️  Image generation failed — falling back to text-only post.")
         post_to_facebook_text_only(caption)
 
     posted.append(article["url"])
     save_posted(posted)
-    print("\nDone! 🎉")
+    print("\n🎉 Done!")
