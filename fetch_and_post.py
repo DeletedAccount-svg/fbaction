@@ -25,6 +25,7 @@ except ImportError:
 PAGE_ID = os.environ["FB_PAGE_ID"]
 ACCESS_TOKEN = os.environ["FB_ACCESS_TOKEN"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
+STABILITY_API_KEY = os.environ["STABILITY_API_KEY"]  # Stability AI token — free at https://platform.stability.ai
 
 # Brief pause before posting to Facebook (avoids hammering the API)
 FB_POST_DELAY = 5
@@ -443,12 +444,14 @@ def add_text_overlay(image_path, headline, source=""):
 
 def generate_image(prompt):
     """
-    Generate a high-quality image using Pollinations AI (free, no API key required).
-    Uses FLUX under the hood. Simple HTTP GET — no cold starts, no rate-limit drama.
+    Generate a high-quality image using Stability AI — Stable Image Core.
+    Free tier: 25 credits on signup (~8 free images at 3 credits each).
+    Sign up free at: https://platform.stability.ai
+    Docs: https://platform.stability.ai/docs/api-reference#tag/Generate
     Center-crops the result to 1200x630 for Facebook.
     """
     import io
-    print("🎨 Generating image with Pollinations AI (FLUX)...")
+    print("🎨 Generating image with Stability AI (Stable Image Core)...")
     TARGET_W, TARGET_H = 1200, 630
 
     quality_boost = (
@@ -462,38 +465,49 @@ def generate_image(prompt):
     MAX_RETRIES = 4
     RETRY_DELAY = 15
 
+    headers = {
+        "Authorization": f"Bearer {STABILITY_API_KEY}",
+        "Accept": "image/*",
+    }
+
     for attempt in range(1, MAX_RETRIES + 1):
-        print(f"  Attempt {attempt}/{MAX_RETRIES} — calling Pollinations AI...")
+        print(f"  Attempt {attempt}/{MAX_RETRIES} — calling Stability AI...")
         try:
-            seed = random.randint(1, 999999)
-            encoded_prompt = urllib.parse.quote(full_prompt)
-            url = (
-                f"https://image.pollinations.ai/prompt/{encoded_prompt}"
-                f"?width=1344&height=768&model=flux&nologo=true&enhance=false&seed={seed}"
-            )
-            resp = requests.get(
-                url,
+            resp = requests.post(
+                "https://api.stability.ai/v2beta/stable-image/generate/core",
+                headers=headers,
+                files={"none": ""},
+                data={
+                    "prompt": full_prompt,
+                    "aspect_ratio": "16:9",
+                    "output_format": "jpeg",
+                },
                 timeout=120,
-                headers={"User-Agent": "Mozilla/5.0 (compatible; AINewsBot/1.0)"}
             )
-            resp.raise_for_status()
+            if resp.status_code == 200:
+                img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+                print(f"  ✅ Image received! Size: {img.size}")
 
-            img = Image.open(io.BytesIO(resp.content)).convert("RGB")
-            print(f"  ✅ Image received! Size: {img.size}")
-
-            # Center-crop to exact 1200x630 (cover-fit, no stretch)
-            path = "/tmp/post_image.jpg"
-            src_w, src_h = img.size
-            scale = max(TARGET_W / src_w, TARGET_H / src_h)
-            new_w = int(src_w * scale + 0.5)
-            new_h = int(src_h * scale + 0.5)
-            img = img.resize((new_w, new_h), Image.LANCZOS)
-            left = (new_w - TARGET_W) // 2
-            top  = (new_h - TARGET_H) // 2
-            img = img.crop((left, top, left + TARGET_W, top + TARGET_H))
-            img.save(path, "JPEG", quality=92)
-            print(f"  ✅ Cropped cleanly to {TARGET_W}x{TARGET_H}")
-            return path
+                # Center-crop to exact 1200x630 (cover-fit, no stretch)
+                path = "/tmp/post_image.jpg"
+                src_w, src_h = img.size
+                scale = max(TARGET_W / src_w, TARGET_H / src_h)
+                new_w = int(src_w * scale + 0.5)
+                new_h = int(src_h * scale + 0.5)
+                img = img.resize((new_w, new_h), Image.LANCZOS)
+                left = (new_w - TARGET_W) // 2
+                top  = (new_h - TARGET_H) // 2
+                img = img.crop((left, top, left + TARGET_W, top + TARGET_H))
+                img.save(path, "JPEG", quality=92)
+                print(f"  ✅ Cropped cleanly to {TARGET_W}x{TARGET_H}")
+                return path
+            else:
+                try:
+                    error_info = resp.json()
+                except Exception:
+                    error_info = resp.text[:200]
+                print(f"  ❌ Status {resp.status_code}: {error_info}")
+                raise Exception(f"Stability AI returned {resp.status_code}: {error_info}")
 
         except Exception as e:
             print(f"  ❌ Error on attempt {attempt}: {e}")
@@ -579,7 +593,7 @@ if __name__ == "__main__":
     print(f"\n📝 Caption preview:\n{caption[:300]}...\n")
     print(f"🎨 Image prompt: {image_prompt}\n")
 
-    # Generate the base image via Pollinations AI (FLUX)
+    # Generate the base image via Stability AI (Stable Image Core)
     image_path = generate_image(image_prompt)
 
     if image_path:
