@@ -21,27 +21,13 @@ except ImportError:
     from PIL import Image, ImageDraw, ImageFont
     print("✅ Pillow installed successfully.")
 
-# Auto-install huggingface_hub if not available
-try:
-    from huggingface_hub import InferenceClient
-    print("✅ huggingface_hub already installed.")
-except ImportError:
-    print("📦 huggingface_hub not found — installing now...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "huggingface_hub", "--quiet"])
-    from huggingface_hub import InferenceClient
-    print("✅ huggingface_hub installed successfully.")
 
 PAGE_ID = os.environ["FB_PAGE_ID"]
 ACCESS_TOKEN = os.environ["FB_ACCESS_TOKEN"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
-HF_API_KEY = os.environ["HF_API_KEY"]  # Hugging Face token (hf_...)
 
-# Hugging Face model ID (used via InferenceClient — no manual URL needed)
-HF_MODEL_ID = "black-forest-labs/FLUX.1-dev"
-
-# How long to wait (seconds) after image is ready before posting to Facebook.
-# HF can be slow; this also gives Facebook's API a breather. 🐢
-FB_POST_DELAY = 30
+# Brief pause before posting to Facebook (avoids hammering the API)
+FB_POST_DELAY = 5
 
 # Google News RSS - trending AI news
 GOOGLE_NEWS_RSS = "https://news.google.com/rss/search?q=artificial+intelligence&hl=en-US&gl=US&ceid=US:en"
@@ -457,12 +443,12 @@ def add_text_overlay(image_path, headline, source=""):
 
 def generate_image(prompt):
     """
-    Generate a high-quality image using Hugging Face InferenceClient (huggingface_hub).
-    Uses the official HF library so routing/endpoints are always up-to-date.
-    Retries automatically on cold-start or rate-limit errors.
+    Generate a high-quality image using Pollinations AI (free, no API key required).
+    Uses FLUX under the hood. Simple HTTP GET — no cold starts, no rate-limit drama.
     Center-crops the result to 1200x630 for Facebook.
     """
-    print("🎨 Generating image with Hugging Face FLUX.1-dev...")
+    import io
+    print("🎨 Generating image with Pollinations AI (FLUX)...")
     TARGET_W, TARGET_H = 1200, 630
 
     quality_boost = (
@@ -473,26 +459,30 @@ def generate_image(prompt):
     )
     full_prompt = f"{prompt}{quality_boost}"
 
-    MAX_RETRIES = 6
-    RETRY_DELAY = 45  # seconds — FLUX.1-dev cold start can take a while
-
-    client = InferenceClient(provider="hf-inference", api_key=HF_API_KEY)
+    MAX_RETRIES = 4
+    RETRY_DELAY = 15
 
     for attempt in range(1, MAX_RETRIES + 1):
-        print(f"  Attempt {attempt}/{MAX_RETRIES} — calling HF InferenceClient...")
+        print(f"  Attempt {attempt}/{MAX_RETRIES} — calling Pollinations AI...")
         try:
-            pil_image = client.text_to_image(
-                full_prompt,
-                model=HF_MODEL_ID,
-                width=1344,
-                height=768,
+            seed = random.randint(1, 999999)
+            encoded_prompt = urllib.parse.quote(full_prompt)
+            url = (
+                f"https://image.pollinations.ai/prompt/{encoded_prompt}"
+                f"?width=1344&height=768&model=flux&nologo=true&enhance=false&seed={seed}"
             )
+            resp = requests.get(
+                url,
+                timeout=120,
+                headers={"User-Agent": "Mozilla/5.0 (compatible; AINewsBot/1.0)"}
+            )
+            resp.raise_for_status()
 
-            print(f"  ✅ Image received! Size: {pil_image.size}")
+            img = Image.open(io.BytesIO(resp.content)).convert("RGB")
+            print(f"  ✅ Image received! Size: {img.size}")
 
             # Center-crop to exact 1200x630 (cover-fit, no stretch)
             path = "/tmp/post_image.jpg"
-            img = pil_image.convert("RGB")
             src_w, src_h = img.size
             scale = max(TARGET_W / src_w, TARGET_H / src_h)
             new_w = int(src_w * scale + 0.5)
@@ -506,27 +496,18 @@ def generate_image(prompt):
             return path
 
         except Exception as e:
-            err_str = str(e).lower()
-            # Model loading / cold start
-            if "loading" in err_str or "503" in err_str or "unavailable" in err_str:
-                print(f"  ⏳ Model is still loading on HF servers. Waiting {RETRY_DELAY}s...")
-            # Rate limited
-            elif "429" in err_str or "rate" in err_str:
-                print(f"  ⚠️  Rate limited by HF. Waiting {RETRY_DELAY}s...")
-            else:
-                print(f"  ❌ Unexpected error: {e}")
-
+            print(f"  ❌ Error on attempt {attempt}: {e}")
             if attempt < MAX_RETRIES:
                 print(f"  Retrying in {RETRY_DELAY}s...")
                 time.sleep(RETRY_DELAY)
 
-    print("  ❌ All HF retries exhausted. Image generation failed.")
+    print("  ❌ All retries exhausted. Image generation failed.")
     return None
 
 
 def post_to_facebook_with_image(message, image_path):
     """Post image + caption to Facebook page."""
-    print(f"⏳ Waiting {FB_POST_DELAY}s before posting to Facebook (giving HF time to breathe)...")
+    print(f"⏳ Waiting {FB_POST_DELAY}s before posting to Facebook...")
     time.sleep(FB_POST_DELAY)
 
     print("📤 Posting to Facebook with image...")
@@ -598,7 +579,7 @@ if __name__ == "__main__":
     print(f"\n📝 Caption preview:\n{caption[:300]}...\n")
     print(f"🎨 Image prompt: {image_prompt}\n")
 
-    # Generate the base image via Hugging Face FLUX.1-dev
+    # Generate the base image via Pollinations AI (FLUX)
     image_path = generate_image(image_prompt)
 
     if image_path:
