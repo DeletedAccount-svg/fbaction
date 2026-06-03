@@ -5,8 +5,6 @@ on:
     - cron: '0 4 * * *'   # 12PM Manila (GMT+8, noon)
     - cron: '0 9 * * *'   # 5PM Manila (GMT+8)
   workflow_dispatch:
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 jobs:
   post-ai-news:
     runs-on: ubuntu-latest
@@ -14,9 +12,9 @@ jobs:
       contents: write
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
       - name: Install dependencies
