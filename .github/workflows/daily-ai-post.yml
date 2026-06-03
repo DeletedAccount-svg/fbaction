@@ -2,9 +2,11 @@ name: Daily AI News Post to Facebook
 on:
   schedule:
     - cron: '0 23 * * *'  # 7AM Manila (GMT+8)
-    - cron: '0 16 * * *'  # 12AM Manila (GMT+8, midnight)
+    - cron: '0 4 * * *'   # 12PM Manila (GMT+8, noon)
     - cron: '0 9 * * *'   # 5PM Manila (GMT+8)
   workflow_dispatch:
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 jobs:
   post-ai-news:
     runs-on: ubuntu-latest
