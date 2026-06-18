@@ -2,9 +2,10 @@ name: Daily AI News Post with Image Text
 
 on:
   schedule:
-    - cron: '0 8 * * *'
+    - cron: '0 23 * * *'  # 7AM Manila (GMT+8)
+    - cron: '0 4 * * *'   # 12PM Manila (GMT+8, noon)
+    - cron: '0 9 * * *'   # 5PM Manila (GMT+8)
   workflow_dispatch:
-
 jobs:
   post-ai-news:
     runs-on: ubuntu-latest
