@@ -8,48 +8,52 @@ from PIL import Image, ImageDraw, ImageFont
 FB_PAGE_ID = os.environ.get('FB_PAGE_ID')
 FB_ACCESS_TOKEN = os.environ.get('FB_ACCESS_TOKEN')
 NEWS_API_KEY = os.environ.get('NEWS_API_KEY', '')
-BRAND_NAME = "AI Academy" # <--- Change this to your page name
 
-def add_text_to_image(image_path, title):
+def add_text_to_image(image_path, title, source_name):
     try:
         img = Image.open(image_path).convert("RGBA")
-        draw = ImageDraw.Draw(img)
         
-        # Load standard fonts available on Ubuntu (GitHub Actions runner)
-        # We scale the font size based on the image width so it looks good on any image
+        # Create a transparent overlay layer so we can control opacity cleanly
+        overlay = Image.new('RGBA', img.size, (255, 255, 255, 0))
+        draw = ImageDraw.Draw(overlay)
+        
+        # Scale font size based on image width
         font_size = int(img.width / 25)
         font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
         
         try:
             font_large = ImageFont.truetype(font_path, font_size)
-            font_small = ImageFont.truetype(font_path, int(font_size / 2))
+            font_small = ImageFont.truetype(font_path, int(font_size / 2.5))
         except:
             font_large = ImageFont.load_default()
             font_small = ImageFont.load_default()
 
-        # 1. Draw Top Banner (Branding)
-        brand_text = BRAND_NAME
-        bbox = draw.textbbox((0, 0), brand_text, font=font_small)
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
-        
-        top_bar_height = text_h + 20
-        draw.rectangle([(0, 0), (img.width, top_bar_height)], fill=(0, 0, 0, 200)) # Semi-transparent black
-        draw.text((15, 10), brand_text, font=font_small, fill=(255, 255, 255, 255))
-
-        # 2. Draw Bottom Banner (News Title)
-        # Wrap the text so it doesn't run off the screen
+        # 1. Draw Top Banner (News Title)
+        # Wrap text so it doesn't run off the screen
         wrapped_title = textwrap.fill(title, width=40)
         bbox_title = draw.textbbox((0, 0), wrapped_title, font=font_large)
         title_h = bbox_title[3] - bbox_title[1]
         
-        bottom_bar_height = title_h + 30
-        draw.rectangle([(0, img.height - bottom_bar_height), (img.width, img.height)], fill=(0, 0, 0, 200))
-        draw.text((15, img.height - bottom_bar_height + 15), wrapped_title, font=font_large, fill=(255, 255, 255, 255))
+        top_bar_height = title_h + 30
+        # Alpha set to 120 for higher transparency (Glass effect)
+        draw.rectangle([(0, 0), (img.width, top_bar_height)], fill=(0, 0, 0, 120))
+        draw.text((15, 15), wrapped_title, font=font_large, fill=(255, 255, 255, 230))
 
-        # Convert back to RGB and save over the original file (JPEG format for Facebook)
+        # 2. Draw Bottom Banner (Source Name)
+        source_text = f"via {source_name}"
+        bbox_source = draw.textbbox((0, 0), source_text, font=font_small)
+        source_h = bbox_source[3] - bbox_source[1]
+        
+        bottom_bar_height = source_h + 20
+        draw.rectangle([(0, img.height - bottom_bar_height), (img.width, img.height)], fill=(0, 0, 0, 120))
+        draw.text((15, img.height - bottom_bar_height + 10), source_text, font=font_small, fill=(255, 255, 255, 230))
+
+        # Merge the transparent overlay onto the original image
+        img = Image.alpha_composite(img, overlay)
+        
+        # Convert back to RGB and save over the original file (JPEG for Facebook)
         img.convert("RGB").save(image_path, "JPEG", quality=90)
-        print("Successfully added text overlay to image.")
+        print("Successfully added transparent text overlay to image.")
         return True
     except Exception as e:
         print(f"Failed to add text to image: {e}")
@@ -69,9 +73,12 @@ def main():
     article = data['articles'][0]
     title = article['title']
     source_url = article['url']
-    description = article.get('description', '')
+    
+    # Extract the clean source name (e.g., "Bloomberg" instead of the whole URL)
+    source_name = article.get('source', {}).get('name', 'Unknown Source')
+    
     api_image_url = article.get('urlToImage', '')
-    print(f'Fetched Article: {title}')
+    print(f'Fetched Article: {title} from {source_name}')
 
     # 2. Download Image
     image_path = '/tmp/news_image.jpg'
@@ -96,11 +103,11 @@ def main():
 
     # 3. Add Text to Image
     if download_success:
-        # If the text overlay fails for some reason, we still want to post the raw image
-        add_text_to_image(image_path, title)
+        add_text_to_image(image_path, title, source_name)
 
     # 4. Post to Facebook
-    message = f'🤖 {title}\n\n{description}\n\nRead more: {source_url}\n\n#AI #ArtificialIntelligence #TechNews'
+    # Cleaned up caption: Removed description and "Read more" link. Just Title and Source.
+    message = f'🤖 {title}\n\nvia {source_name}\n\n#AI #ArtificialIntelligence #TechNews'
 
     if download_success and os.path.exists(image_path):
         fb_api_url = f'https://graph.facebook.com/v19.0/{FB_PAGE_ID}/photos'
