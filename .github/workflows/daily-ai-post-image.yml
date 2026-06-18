@@ -24,17 +24,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4
 
-      - name: Fetch News and Post to Facebook
+      - name: Fetch News, Download Image, and Post to Facebook
         env:
           FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
           FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
-          # Optional: If you use a News API (like NewsAPI.org), put the key here
           NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }} 
         run: |
           python -c "
           import os
           import requests
           from bs4 import BeautifulSoup
+          from urllib.parse import urljoin
 
           FB_PAGE_ID = os.environ.get('FB_PAGE_ID')
           FB_ACCESS_TOKEN = os.environ.get('FB_ACCESS_TOKEN')
@@ -43,9 +43,6 @@ jobs:
           # ---------------------------------------------------------
           # STEP 1: FETCH THE AI NEWS
           # ---------------------------------------------------------
-          # Example using NewsAPI.org (You can replace this with your existing fetch logic)
-          # If you use a different source, ensure you get the 'title', 'url', and 'description'
-          
           news_url = f'https://newsapi.org/v2/everything?q=artificial+intelligence&sortBy=publishedAt&pageSize=1&apiKey={NEWS_API_KEY}'
           response = requests.get(news_url)
           data = response.json()
@@ -58,56 +55,82 @@ jobs:
           title = article['title']
           source_url = article['url']
           description = article.get('description', '')
-          
           print(f'Fetched Article: {title}')
 
           # ---------------------------------------------------------
-          # STEP 2: EXTRACT THE IMAGE FROM THE SOURCE URL
+          # STEP 2: EXTRACT AND DOWNLOAD THE IMAGE LOCALLY
           # ---------------------------------------------------------
           image_url = None
+          image_path = '/tmp/news_image.jpg' # Temporary file in GitHub Actions environment
+          headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
           
           try:
-              # Fetch the actual news article page
-              headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
               page_response = requests.get(source_url, headers=headers, timeout=10)
               soup = BeautifulSoup(page_response.text, 'html.parser')
               
-              # Look for the Open Graph image tag (standard for news articles)
+              # Try to find og:image
               og_image = soup.find('meta', property='og:image')
+              if not og_image:
+                  # Fallback to twitter:image if og:image is missing
+                  og_image = soup.find('meta', attrs={'name': 'twitter:image'})
+              
               if og_image and og_image.get('content'):
-                  image_url = og_image['content']
+                  raw_img_url = og_image['content']
+                  
+                  # Convert relative URLs to absolute URLs (Fixes 'Missing image' errors)
+                  image_url = urljoin(source_url, raw_img_url)
                   print(f'Extracted Image URL: {image_url}')
+                  
+                  # Download the image to the GitHub Action runner
+                  img_response = requests.get(image_url, headers=headers, timeout=10)
+                  content_type = img_response.headers.get('Content-Type', '')
+                  
+                  # Verify the downloaded file is actually an image
+                  if img_response.status_code == 200 and 'image' in content_type:
+                      with open(image_path, 'wb') as f:
+                          f.write(img_response.content)
+                      print('Image successfully downloaded locally.')
+                  else:
+                      print(f'Failed to download image. Status: {img_response.status_code}, Type: {content_type}')
+                      image_url = None
+              else:
+                  print('No image meta tag found on the article page.')
+                  image_url = None
+                  
           except Exception as e:
-              print(f'Could not extract image from source: {e}')
+              print(f'Error extracting/downloading image: {e}')
+              image_url = None
 
           # ---------------------------------------------------------
           # STEP 3: UPLOAD TO FACEBOOK
           # ---------------------------------------------------------
-          # Format the message body
           message = f'🤖 {title}\n\n{description}\n\nRead more: {source_url}\n\n#AI #ArtificialIntelligence #TechNews'
 
-          fb_api_url = f'https://graph.facebook.com/v19.0/{FB_PAGE_ID}/photos'
-
-          if image_url:
-              # If we successfully got an image, post it as a photo with a caption
-              payload = {
-                  'url': image_url,
-                  'message': message,
-                  'access_token': FB_ACCESS_TOKEN
-              }
-              print('Posting to Facebook with image...')
+          if image_url and os.path.exists(image_path):
+              # Upload local file directly to Facebook (Bypasses hotlinking blocks)
+              fb_api_url = f'https://graph.facebook.com/v19.0/{FB_PAGE_ID}/photos'
+              print('Uploading local image file to Facebook...')
+              
+              with open(image_path, 'rb') as img_file:
+                  payload = {
+                      'message': message,
+                      'access_token': FB_ACCESS_TOKEN
+                  }
+                  files = {
+                      'source': (os.path.basename(image_path), img_file)
+                  }
+                  fb_response = requests.post(fb_api_url, data=payload, files=files)
           else:
-              # Fallback: If no image was found, post text and the source URL as a standard link post
+              # Fallback to text/link post if no image was found or downloaded
               fb_api_url = f'https://graph.facebook.com/v19.0/{FB_PAGE_ID}/feed'
               payload = {
                   'message': message,
                   'link': source_url,
                   'access_token': FB_ACCESS_TOKEN
               }
-              print('No image found. Posting to Facebook as text/link...')
+              print('No valid image found. Posting text and link to Facebook...')
+              fb_response = requests.post(fb_api_url, data=payload)
 
-          fb_response = requests.post(fb_api_url, data=payload)
-          
           if fb_response.status_code == 200:
               print('Successfully posted to Facebook!')
           else:
