@@ -13,11 +13,22 @@ def add_text_to_image(image_path, title, source_name):
     try:
         img = Image.open(image_path).convert("RGBA")
         
+        # ---------------------------------------------------------
+        # NEW: Resize image if it's too large to prevent FB API errors
+        # ---------------------------------------------------------
+        max_width = 1200 # Standard Facebook post width
+        if img.width > max_width:
+            # Calculate new height to maintain aspect ratio
+            new_height = int((max_width / img.width) * img.height)
+            # Use LANCZOS for high-quality resizing
+            img = img.resize((max_width, new_height), Image.LANCZOS)
+            print(f"Image resized to {img.width}x{img.height} to meet FB requirements.")
+        
         # Create a transparent overlay layer so we can control opacity cleanly
         overlay = Image.new('RGBA', img.size, (255, 255, 255, 0))
         draw = ImageDraw.Draw(overlay)
         
-        # Scale font size based on image width
+        # Scale font size based on the NEW image width
         font_size = int(img.width / 25)
         font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
         
@@ -29,13 +40,11 @@ def add_text_to_image(image_path, title, source_name):
             font_small = ImageFont.load_default()
 
         # 1. Draw Top Banner (News Title)
-        # Wrap text so it doesn't run off the screen
         wrapped_title = textwrap.fill(title, width=40)
         bbox_title = draw.textbbox((0, 0), wrapped_title, font=font_large)
         title_h = bbox_title[3] - bbox_title[1]
         
         top_bar_height = title_h + 30
-        # Alpha set to 120 for higher transparency (Glass effect)
         draw.rectangle([(0, 0), (img.width, top_bar_height)], fill=(0, 0, 0, 120))
         draw.text((15, 15), wrapped_title, font=font_large, fill=(255, 255, 255, 230))
 
@@ -51,8 +60,9 @@ def add_text_to_image(image_path, title, source_name):
         # Merge the transparent overlay onto the original image
         img = Image.alpha_composite(img, overlay)
         
-        # Convert back to RGB and save over the original file (JPEG for Facebook)
-        img.convert("RGB").save(image_path, "JPEG", quality=90)
+        # Convert back to RGB and save over the original file
+        # Lowered quality slightly to 85 to reduce file size further
+        img.convert("RGB").save(image_path, "JPEG", quality=85)
         print("Successfully added transparent text overlay to image.")
         return True
     except Exception as e:
@@ -73,13 +83,8 @@ def main():
     article = data['articles'][0]
     title = article['title']
     source_url = article['url']
-    
-    # Extract the clean source name (e.g., "Bloomberg" instead of the whole URL)
     source_name = article.get('source', {}).get('name', 'Unknown Source')
-    
-    # RESTORED: Get the article description/first paragraph
     description = article.get('description', 'No description available.')
-    
     api_image_url = article.get('urlToImage', '')
     print(f'Fetched Article: {title} from {source_name}')
 
@@ -104,12 +109,11 @@ def main():
         except Exception as e:
             print(f'Error downloading image: {e}')
 
-    # 3. Add Text to Image
+    # 3. Add Text to Image (and Resize)
     if download_success:
         add_text_to_image(image_path, title, source_name)
 
     # 4. Post to Facebook
-    # RESTORED: Added the description (first paragraph) back to the text caption
     message = f'🤖 {title}\n\n{description}\n\nvia {source_name}\n\n#AI #ArtificialIntelligence #TechNews'
 
     if download_success and os.path.exists(image_path):
