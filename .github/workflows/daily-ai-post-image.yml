@@ -1,0 +1,116 @@
+name: Daily AI News Post with Image
+
+on:
+  schedule:
+    # Runs every day at 08:00 AM UTC (Adjust time as needed)
+    - cron: '0 8 * * *'
+  workflow_dispatch: # Allows you to run this manually from the Actions tab
+
+jobs:
+  post-ai-news:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests beautifulsoup4
+
+      - name: Fetch News and Post to Facebook
+        env:
+          FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
+          FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
+          # Optional: If you use a News API (like NewsAPI.org), put the key here
+          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }} 
+        run: |
+          python -c "
+          import os
+          import requests
+          from bs4 import BeautifulSoup
+
+          FB_PAGE_ID = os.environ.get('FB_PAGE_ID')
+          FB_ACCESS_TOKEN = os.environ.get('FB_ACCESS_TOKEN')
+          NEWS_API_KEY = os.environ.get('NEWS_API_KEY', '')
+
+          # ---------------------------------------------------------
+          # STEP 1: FETCH THE AI NEWS
+          # ---------------------------------------------------------
+          # Example using NewsAPI.org (You can replace this with your existing fetch logic)
+          # If you use a different source, ensure you get the 'title', 'url', and 'description'
+          
+          news_url = f'https://newsapi.org/v2/everything?q=artificial+intelligence&sortBy=publishedAt&pageSize=1&apiKey={NEWS_API_KEY}'
+          response = requests.get(news_url)
+          data = response.json()
+          
+          if data.get('status') != 'ok' or not data.get('articles'):
+              print('Failed to fetch news or no articles found.')
+              exit(1)
+              
+          article = data['articles'][0]
+          title = article['title']
+          source_url = article['url']
+          description = article.get('description', '')
+          
+          print(f'Fetched Article: {title}')
+
+          # ---------------------------------------------------------
+          # STEP 2: EXTRACT THE IMAGE FROM THE SOURCE URL
+          # ---------------------------------------------------------
+          image_url = None
+          
+          try:
+              # Fetch the actual news article page
+              headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+              page_response = requests.get(source_url, headers=headers, timeout=10)
+              soup = BeautifulSoup(page_response.text, 'html.parser')
+              
+              # Look for the Open Graph image tag (standard for news articles)
+              og_image = soup.find('meta', property='og:image')
+              if og_image and og_image.get('content'):
+                  image_url = og_image['content']
+                  print(f'Extracted Image URL: {image_url}')
+          except Exception as e:
+              print(f'Could not extract image from source: {e}')
+
+          # ---------------------------------------------------------
+          # STEP 3: UPLOAD TO FACEBOOK
+          # ---------------------------------------------------------
+          # Format the message body
+          message = f'🤖 {title}\n\n{description}\n\nRead more: {source_url}\n\n#AI #ArtificialIntelligence #TechNews'
+
+          fb_api_url = f'https://graph.facebook.com/v19.0/{FB_PAGE_ID}/photos'
+
+          if image_url:
+              # If we successfully got an image, post it as a photo with a caption
+              payload = {
+                  'url': image_url,
+                  'message': message,
+                  'access_token': FB_ACCESS_TOKEN
+              }
+              print('Posting to Facebook with image...')
+          else:
+              # Fallback: If no image was found, post text and the source URL as a standard link post
+              fb_api_url = f'https://graph.facebook.com/v19.0/{FB_PAGE_ID}/feed'
+              payload = {
+                  'message': message,
+                  'link': source_url,
+                  'access_token': FB_ACCESS_TOKEN
+              }
+              print('No image found. Posting to Facebook as text/link...')
+
+          fb_response = requests.post(fb_api_url, data=payload)
+          
+          if fb_response.status_code == 200:
+              print('Successfully posted to Facebook!')
+          else:
+              print(f'Failed to post to Facebook. Response: {fb_response.text}')
+              exit(1)
+          "
