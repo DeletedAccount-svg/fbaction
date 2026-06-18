@@ -77,6 +77,9 @@ def main():
     # Extract the clean source name (e.g., "Bloomberg" instead of the whole URL)
     source_name = article.get('source', {}).get('name', 'Unknown Source')
     
+    # RESTORED: Get the article description/first paragraph
+    description = article.get('description', 'No description available.')
+    
     api_image_url = article.get('urlToImage', '')
     print(f'Fetched Article: {title} from {source_name}')
 
@@ -106,8 +109,8 @@ def main():
         add_text_to_image(image_path, title, source_name)
 
     # 4. Post to Facebook
-    # Cleaned up caption: Removed description and "Read more" link. Just Title and Source.
-    message = f'🤖 {title}\n\nvia {source_name}\n\n#AI #ArtificialIntelligence #TechNews'
+    # RESTORED: Added the description (first paragraph) back to the text caption
+    message = f'🤖 {title}\n\n{description}\n\nvia {source_name}\n\n#AI #ArtificialIntelligence #TechNews'
 
     if download_success and os.path.exists(image_path):
         fb_api_url = f'https://graph.facebook.com/v19.0/{FB_PAGE_ID}/photos'
