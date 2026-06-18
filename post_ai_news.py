@@ -13,22 +13,17 @@ def add_text_to_image(image_path, title, source_name):
     try:
         img = Image.open(image_path).convert("RGBA")
         
-        # ---------------------------------------------------------
-        # NEW: Resize image if it's too large to prevent FB API errors
-        # ---------------------------------------------------------
-        max_width = 1200 # Standard Facebook post width
+        # Resize image if it's too large to prevent FB API errors
+        max_width = 1200 
         if img.width > max_width:
-            # Calculate new height to maintain aspect ratio
             new_height = int((max_width / img.width) * img.height)
-            # Use LANCZOS for high-quality resizing
             img = img.resize((max_width, new_height), Image.LANCZOS)
             print(f"Image resized to {img.width}x{img.height} to meet FB requirements.")
         
-        # Create a transparent overlay layer so we can control opacity cleanly
+        # Create a transparent overlay layer
         overlay = Image.new('RGBA', img.size, (255, 255, 255, 0))
         draw = ImageDraw.Draw(overlay)
         
-        # Scale font size based on the NEW image width
         font_size = int(img.width / 25)
         font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
         
@@ -60,8 +55,6 @@ def add_text_to_image(image_path, title, source_name):
         # Merge the transparent overlay onto the original image
         img = Image.alpha_composite(img, overlay)
         
-        # Convert back to RGB and save over the original file
-        # Lowered quality slightly to 85 to reduce file size further
         img.convert("RGB").save(image_path, "JPEG", quality=85)
         print("Successfully added transparent text overlay to image.")
         return True
@@ -83,7 +76,11 @@ def main():
     article = data['articles'][0]
     title = article['title']
     source_url = article['url']
-    source_name = article.get('source', {}).get('name', 'Unknown Source')
+    
+    # Extract source name and CLEAN IT (Remove .com, .org, etc.)
+    raw_source_name = article.get('source', {}).get('name', 'Unknown Source')
+    source_name = os.path.splitext(raw_source_name)[0] # Turns "Biztoc.com" into "Biztoc"
+    
     description = article.get('description', 'No description available.')
     api_image_url = article.get('urlToImage', '')
     print(f'Fetched Article: {title} from {source_name}')
@@ -109,11 +106,12 @@ def main():
         except Exception as e:
             print(f'Error downloading image: {e}')
 
-    # 3. Add Text to Image (and Resize)
+    # 3. Add Text to Image
     if download_success:
         add_text_to_image(image_path, title, source_name)
 
     # 4. Post to Facebook
+    # Notice we only use the cleaned "source_name" (e.g., "via Biztoc")
     message = f'🤖 {title}\n\n{description}\n\nvia {source_name}\n\n#AI #ArtificialIntelligence #TechNews'
 
     if download_success and os.path.exists(image_path):
