@@ -2,9 +2,8 @@ name: Daily AI News Post with Image
 
 on:
   schedule:
-    # Runs every day at 08:00 AM UTC (Adjust time as needed)
     - cron: '0 8 * * *'
-  workflow_dispatch: # Allows you to run this manually from the Actions tab
+  workflow_dispatch:
 
 jobs:
   post-ai-news:
@@ -55,59 +54,62 @@ jobs:
           title = article['title']
           source_url = article['url']
           description = article.get('description', '')
+          
+          # GET THE IMAGE DIRECTLY FROM THE API DATA
+          api_image_url = article.get('urlToImage', '')
           print(f'Fetched Article: {title}')
 
           # ---------------------------------------------------------
           # STEP 2: EXTRACT AND DOWNLOAD THE IMAGE LOCALLY
           # ---------------------------------------------------------
           image_url = None
-          image_path = '/tmp/news_image.jpg' # Temporary file in GitHub Actions environment
+          image_path = '/tmp/news_image.jpg'
           headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
           
-          try:
-              page_response = requests.get(source_url, headers=headers, timeout=10)
-              soup = BeautifulSoup(page_response.text, 'html.parser')
-              
-              # Try to find og:image
-              og_image = soup.find('meta', property='og:image')
-              if not og_image:
-                  # Fallback to twitter:image if og:image is missing
-                  og_image = soup.find('meta', attrs={'name': 'twitter:image'})
-              
-              if og_image and og_image.get('content'):
-                  raw_img_url = og_image['content']
-                  
-                  # Convert relative URLs to absolute URLs (Fixes 'Missing image' errors)
-                  image_url = urljoin(source_url, raw_img_url)
-                  print(f'Extracted Image URL: {image_url}')
-                  
-                  # Download the image to the GitHub Action runner
+          # 2A: Try using the image URL provided by the News API
+          if api_image_url:
+              image_url = api_image_url
+              print(f'Image URL from API: {image_url}')
+          else:
+              # 2B: Fallback to scraping the website if API didn't provide an image
+              print('No image in API. Trying to scrape source URL...')
+              try:
+                  page_response = requests.get(source_url, headers=headers, timeout=10)
+                  soup = BeautifulSoup(page_response.text, 'html.parser')
+                  og_image = soup.find('meta', property='og:image')
+                  if not og_image:
+                      og_image = soup.find('meta', attrs={'name': 'twitter:image'})
+                      
+                  if og_image and og_image.get('content'):
+                      image_url = urljoin(source_url, og_image['content'])
+                      print(f'Image URL from scraping: {image_url}')
+              except Exception as e:
+                  print(f'Error scraping for image: {e}')
+
+          # 2C: Download the image to the GitHub Action runner
+          download_success = False
+          if image_url:
+              try:
                   img_response = requests.get(image_url, headers=headers, timeout=10)
                   content_type = img_response.headers.get('Content-Type', '')
                   
-                  # Verify the downloaded file is actually an image
                   if img_response.status_code == 200 and 'image' in content_type:
                       with open(image_path, 'wb') as f:
                           f.write(img_response.content)
+                      download_success = True
                       print('Image successfully downloaded locally.')
                   else:
                       print(f'Failed to download image. Status: {img_response.status_code}, Type: {content_type}')
-                      image_url = None
-              else:
-                  print('No image meta tag found on the article page.')
-                  image_url = None
-                  
-          except Exception as e:
-              print(f'Error extracting/downloading image: {e}')
-              image_url = None
+              except Exception as e:
+                  print(f'Error downloading image: {e}')
 
           # ---------------------------------------------------------
           # STEP 3: UPLOAD TO FACEBOOK
           # ---------------------------------------------------------
           message = f'🤖 {title}\n\n{description}\n\nRead more: {source_url}\n\n#AI #ArtificialIntelligence #TechNews'
 
-          if image_url and os.path.exists(image_path):
-              # Upload local file directly to Facebook (Bypasses hotlinking blocks)
+          if download_success and os.path.exists(image_path):
+              # Upload as a PHOTO. This guarantees it shows the image, not a website preview.
               fb_api_url = f'https://graph.facebook.com/v19.0/{FB_PAGE_ID}/photos'
               print('Uploading local image file to Facebook...')
               
@@ -121,7 +123,7 @@ jobs:
                   }
                   fb_response = requests.post(fb_api_url, data=payload, files=files)
           else:
-              # Fallback to text/link post if no image was found or downloaded
+              # Absolute worst-case fallback if no image exists at all
               fb_api_url = f'https://graph.facebook.com/v19.0/{FB_PAGE_ID}/feed'
               payload = {
                   'message': message,
