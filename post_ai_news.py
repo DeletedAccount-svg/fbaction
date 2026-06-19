@@ -1,8 +1,6 @@
 import os
 import requests
 import textwrap
-from bs4 import BeautifulSoup
-from urllib.parse import urljoin
 from PIL import Image, ImageDraw, ImageFont
 
 FB_PAGE_ID = os.environ.get('FB_PAGE_ID')
@@ -79,7 +77,7 @@ def main():
     
     # Extract source name and CLEAN IT (Remove .com, .org, etc.)
     raw_source_name = article.get('source', {}).get('name', 'Unknown Source')
-    source_name = os.path.splitext(raw_source_name)[0] # Turns "Biztoc.com" into "Biztoc"
+    source_name = os.path.splitext(raw_source_name)[0]  # Turns "Biztoc.com" into "Biztoc"
     
     description = article.get('description', 'No description available.')
     api_image_url = article.get('urlToImage', '')
@@ -111,17 +109,42 @@ def main():
         add_text_to_image(image_path, title, source_name)
 
     # 4. Post to Facebook
-    # Notice we only use the cleaned "source_name" (e.g., "via Biztoc")
     message = f'🤖 {title}\n\n{description}\n\nvia {source_name}\n\n#AI #ArtificialIntelligence #TechNews'
 
     if download_success and os.path.exists(image_path):
-        fb_api_url = f'https://graph.facebook.com/v19.0/{FB_PAGE_ID}/photos'
-        print('Uploading image with text to Facebook...')
+        # ✅ FIXED: Two-step method so image shows in Posts feed, not just Photos album
+
+        # STEP 1: Upload image as UNPUBLISHED (silent upload, no post yet)
+        print('Uploading image silently to Facebook...')
+        upload_url = f'https://graph.facebook.com/v19.0/{FB_PAGE_ID}/photos'
         with open(image_path, 'rb') as img_file:
-            payload = {'message': message, 'access_token': FB_ACCESS_TOKEN}
+            upload_payload = {
+                'access_token': FB_ACCESS_TOKEN,
+                'published': 'false'  # 👈 KEY FIX: Don't publish yet!
+            }
             files = {'source': (os.path.basename(image_path), img_file)}
-            fb_response = requests.post(fb_api_url, data=payload, files=files)
+            upload_response = requests.post(upload_url, data=upload_payload, files=files)
+
+        if upload_response.status_code != 200:
+            print(f'Failed to upload image. Response: {upload_response.text}')
+            exit(1)
+
+        photo_id = upload_response.json().get('id')
+        print(f'Image uploaded successfully with ID: {photo_id}')
+
+        # STEP 2: Post to /feed with the uploaded photo attached
+        # 👈 This makes it appear in the Posts feed WITH the image!
+        print('Publishing post to Facebook feed with attached image...')
+        fb_api_url = f'https://graph.facebook.com/v19.0/{FB_PAGE_ID}/feed'
+        payload = {
+            'message': message,
+            'attached_media': f'[{{"media_fbid":"{photo_id}"}}]',
+            'access_token': FB_ACCESS_TOKEN
+        }
+        fb_response = requests.post(fb_api_url, data=payload)
+
     else:
+        # No image fallback: post text + link to feed
         fb_api_url = f'https://graph.facebook.com/v19.0/{FB_PAGE_ID}/feed'
         payload = {'message': message, 'link': source_url, 'access_token': FB_ACCESS_TOKEN}
         print('No image found. Posting text and link to Facebook...')
