@@ -1,4 +1,5 @@
 import os
+import json
 import requests
 import textwrap
 from PIL import Image, ImageDraw, ImageFont
@@ -138,7 +139,7 @@ def main():
         fb_api_url = f'https://graph.facebook.com/v19.0/{FB_PAGE_ID}/feed'
         payload = {
             'message': message,
-            'attached_media': f'[{{"media_fbid":"{photo_id}"}}]',
+            'attached_media': json.dumps([{"media_fbid": photo_id}]),  # 👈 safer serialization
             'access_token': FB_ACCESS_TOKEN
         }
         fb_response = requests.post(fb_api_url, data=payload)
