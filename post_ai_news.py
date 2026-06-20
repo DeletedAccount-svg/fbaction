@@ -1,5 +1,7 @@
 import os
 import json
+import random
+import glob
 import requests
 import textwrap
 import subprocess
@@ -8,6 +10,55 @@ from PIL import Image, ImageDraw, ImageFont
 FB_PAGE_ID = os.environ.get('FB_PAGE_ID')
 FB_ACCESS_TOKEN = os.environ.get('FB_ACCESS_TOKEN')
 NEWS_API_KEY = os.environ.get('NEWS_API_KEY', '')
+
+# Folder where royalty-free background tracks live, organized by mood/genre.
+# Example layout:
+#   assets/music/suspense/curse_of_old_density_time.mp3
+#   assets/music/suspense/another_track.mp3
+MUSIC_ROOT = os.environ.get('MUSIC_ROOT', 'assets/music')
+MUSIC_GENRE = os.environ.get('MUSIC_GENRE', 'suspense')
+
+
+def pick_music_track(genre=MUSIC_GENRE, music_root=MUSIC_ROOT):
+    """Pick a random track from assets/music/<genre>/. Returns None if folder is empty/missing."""
+    pattern = os.path.join(music_root, genre, '*.mp3')
+    tracks = glob.glob(pattern)
+    if not tracks:
+        print(f"No music tracks found in {pattern}. Reel will be uploaded without audio.")
+        return None
+    chosen = random.choice(tracks)
+    print(f"Selected music track: {chosen}")
+    return chosen
+
+
+def get_audio_duration(audio_path):
+    """Use ffprobe to get the duration (in seconds) of an audio file."""
+    try:
+        cmd = [
+            'ffprobe', '-v', 'error',
+            '-show_entries', 'format=duration',
+            '-of', 'json',
+            audio_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"ffprobe error reading duration: {result.stderr}")
+            return None
+        data = json.loads(result.stdout)
+        return float(data['format']['duration'])
+    except Exception as e:
+        print(f"Failed to get audio duration: {e}")
+        return None
+
+
+def get_random_clip_start(audio_path, clip_duration):
+    """Pick a random start point in the track so the 10s clip isn't always the same section."""
+    total_duration = get_audio_duration(audio_path)
+    if not total_duration or total_duration <= clip_duration:
+        return 0
+    max_start = total_duration - clip_duration
+    return round(random.uniform(0, max_start), 2)
+
 
 def add_text_to_image(image_path, title, source_name):
     try:
@@ -56,20 +107,36 @@ def add_text_to_image(image_path, title, source_name):
         print(f"Failed to add text to image: {e}")
         return False
 
-def convert_image_to_video(image_path, video_path, duration=10):
-    """Convert image to 10-second video using ffmpeg - required for Reels"""
+
+def convert_image_to_video(image_path, video_path, duration=10, audio_path=None, audio_start=0):
+    """Convert image to a 10-second video using ffmpeg - required for Reels.
+    If audio_path is provided, a clip of that track (starting at audio_start) is mixed in
+    with a 1s fade-in and 2s fade-out.
+    """
     try:
-        cmd = [
-            'ffmpeg', '-y',
-            '-loop', '1',
-            '-i', image_path,
+        cmd = ['ffmpeg', '-y', '-loop', '1', '-i', image_path]
+
+        if audio_path:
+            cmd += ['-ss', str(audio_start), '-t', str(duration), '-i', audio_path]
+
+        cmd += [
             '-c:v', 'libx264',
             '-t', str(duration),
             '-pix_fmt', 'yuv420p',
             '-vf', 'scale=1080:1920',
             '-r', '30',
-            video_path
         ]
+
+        if audio_path:
+            fade_out_start = max(duration - 2, 0)
+            cmd += [
+                '-c:a', 'aac',
+                '-af', f'afade=t=in:st=0:d=1,afade=t=out:st={fade_out_start}:d=2',
+                '-shortest',
+            ]
+
+        cmd += [video_path]
+
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode == 0:
             print(f"Video created successfully: {video_path}")
@@ -80,6 +147,7 @@ def convert_image_to_video(image_path, video_path, duration=10):
     except Exception as e:
         print(f"Failed to convert image to video: {e}")
         return False
+
 
 def upload_reel_to_facebook(video_path, message):
     """Upload video as a Reel using Facebook Resumable Upload API"""
@@ -95,7 +163,7 @@ def upload_reel_to_facebook(video_path, message):
         'access_token': FB_ACCESS_TOKEN
     }
     init_response = requests.post(init_url, data=init_payload)
-    
+
     if init_response.status_code != 200:
         print(f"Failed to initialize upload: {init_response.text}")
         return False
@@ -139,6 +207,7 @@ def upload_reel_to_facebook(video_path, message):
     else:
         print(f"Failed to publish Reel: {publish_response.text}")
         return False
+
 
 def main():
     # 1. Fetch News
@@ -186,11 +255,20 @@ def main():
     if download_success:
         add_text_to_image(image_path, title, source_name)
 
-    # 4. Convert Image to Video for Reel
+    # 4. Convert Image to Video for Reel (with background music)
     message = f'🤖 {title}\n\n{description}\n\nvia {source_name}\n\n#AI #ArtificialIntelligence #TechNews'
 
     if download_success:
-        video_created = convert_image_to_video(image_path, video_path, duration=10)
+        clip_duration = 10
+        audio_path = pick_music_track()
+        audio_start = get_random_clip_start(audio_path, clip_duration) if audio_path else 0
+
+        video_created = convert_image_to_video(
+            image_path, video_path,
+            duration=clip_duration,
+            audio_path=audio_path,
+            audio_start=audio_start
+        )
         if video_created:
             # 5. Upload as Reel
             success = upload_reel_to_facebook(video_path, message)
@@ -219,6 +297,7 @@ def main():
         else:
             print(f'Failed to post: {fb_response.text}')
             exit(1)
+
 
 if __name__ == '__main__':
     main()
