@@ -27,9 +27,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests beautifulsoup4 Pillow
 
+      - name: Check music assets
+        run: |
+          if [ -z "$(find assets/music -type f -name '*.mp3' 2>/dev/null)" ]; then
+            echo "::warning::No mp3 tracks found under assets/music/. Reels will be uploaded without background music."
+          else
+            echo "Music tracks found:"
+            find assets/music -type f -name '*.mp3'
+          fi
+
       - name: Run AI News Poster Script
         env:
           FB_PAGE_ID: ${{ secrets.FB_PAGE_ID }}
           FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
-          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }} 
+          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+          MUSIC_GENRE: suspense
         run: python post_ai_news.py
