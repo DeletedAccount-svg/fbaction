@@ -60,7 +60,12 @@ def get_random_clip_start(audio_path, clip_duration):
     return round(random.uniform(0, max_start), 2)
 
 
-def add_text_to_image(image_path, title, source_name):
+def add_text_to_image(image_path, source_name):
+    """Resize image for Reels and burn in a small bottom source credit.
+    The main headline is no longer baked in here — it's drawn as an animated
+    overlay on the video itself (see convert_image_to_video), since a fading
+    centered title looks far better on a moving clip than a flat static banner.
+    """
     try:
         img = Image.open(image_path).convert("RGBA")
 
@@ -73,43 +78,72 @@ def add_text_to_image(image_path, title, source_name):
         overlay = Image.new('RGBA', img.size, (255, 255, 255, 0))
         draw = ImageDraw.Draw(overlay)
 
-        font_size = int(target_width / 18)
+        font_size = int(target_width / 28)
         font_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
         try:
-            font_large = ImageFont.truetype(font_path, font_size)
-            font_small = ImageFont.truetype(font_path, int(font_size / 2))
+            font_small = ImageFont.truetype(font_path, font_size)
         except:
-            font_large = ImageFont.load_default()
             font_small = ImageFont.load_default()
 
-        # Top Banner - News Title
-        wrapped_title = textwrap.fill(title, width=30)
-        bbox_title = draw.textbbox((0, 0), wrapped_title, font=font_large)
-        title_h = bbox_title[3] - bbox_title[1]
-        top_bar_height = title_h + 60
-        draw.rectangle([(0, 0), (target_width, top_bar_height)], fill=(0, 0, 0, 170))
-        draw.text((30, 30), wrapped_title, font=font_large, fill=(255, 255, 255, 230))
-
-        # Bottom Banner - Source Name
+        # Bottom Banner - Source Name (kept light/static since it's just a credit)
         source_text = f"via {source_name} | #AI #ArtificialIntelligence"
         bbox_source = draw.textbbox((0, 0), source_text, font=font_small)
         source_h = bbox_source[3] - bbox_source[1]
         bottom_bar_height = source_h + 40
-        draw.rectangle([(0, target_height - bottom_bar_height), (target_width, target_height)], fill=(0, 0, 0, 170))
-        draw.text((30, target_height - bottom_bar_height + 20), source_text, font=font_small, fill=(255, 255, 255, 230))
+        draw.rectangle(
+            [(0, target_height - bottom_bar_height), (target_width, target_height)],
+            fill=(0, 0, 0, 110)
+        )
+        draw.text(
+            (30, target_height - bottom_bar_height + 20),
+            source_text, font=font_small, fill=(255, 255, 255, 220)
+        )
 
         img = Image.alpha_composite(img, overlay)
         img.convert("RGB").save(image_path, "JPEG", quality=90)
-        print("Successfully added text overlay to image.")
+        print("Successfully added source credit to image.")
         return True
     except Exception as e:
         print(f"Failed to add text to image: {e}")
         return False
 
 
-def convert_image_to_video(image_path, video_path, duration=10, audio_path=None, audio_start=0):
+def build_title_drawtext_filter(title, duration, font_path="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"):
+    """Write the wrapped title to a temp textfile and return an ffmpeg drawtext filter string
+    that positions it in the upper third of the video with a light transparent box.
+    Fades in over the first second, holds, then fades out with enough lead time to leave
+    the last 2 seconds of the clip completely clean (no text).
+    """
+    wrapped_title = textwrap.fill(title, width=22)
+    textfile_path = '/tmp/title_text.txt'
+    with open(textfile_path, 'w') as f:
+        f.write(wrapped_title)
+
+    clean_tail = 2  # seconds at the end with no title visible
+    fade_out_end = max(duration - clean_tail, 0)
+    fade_out_start = max(fade_out_end - 1, 0)
+
+    alpha_expr = (
+        f"if(lt(t\\,1)\\,t\\,"
+        f"if(lt(t\\,{fade_out_start})\\,1\\,"
+        f"if(lt(t\\,{fade_out_end})\\,({fade_out_end}-t)\\,0)))"
+    )
+
+    drawtext = (
+        f"drawtext=textfile='{textfile_path}':fontfile='{font_path}':"
+        f"fontsize=64:fontcolor=white:line_spacing=10:"
+        f"box=1:boxcolor=black@0.35:boxborderw=30:"
+        f"x=(w-text_w)/2:y=(h*0.30-text_h/2):"
+        f"alpha='{alpha_expr}'"
+    )
+    return drawtext
+
+
+def convert_image_to_video(image_path, video_path, title=None, duration=10, audio_path=None, audio_start=0):
     """Convert image to a 10-second video using ffmpeg - required for Reels.
+    If title is provided, it's drawn centered on the video in a light transparent box,
+    fading in over the first second and out over the last second.
     If audio_path is provided, a clip of that track (starting at audio_start) is mixed in
     with a 1s fade-in and 2s fade-out.
     """
@@ -119,11 +153,15 @@ def convert_image_to_video(image_path, video_path, duration=10, audio_path=None,
         if audio_path:
             cmd += ['-ss', str(audio_start), '-t', str(duration), '-i', audio_path]
 
+        vf_chain = ['scale=1080:1920']
+        if title:
+            vf_chain.append(build_title_drawtext_filter(title, duration))
+
         cmd += [
             '-c:v', 'libx264',
             '-t', str(duration),
             '-pix_fmt', 'yuv420p',
-            '-vf', 'scale=1080:1920',
+            '-vf', ','.join(vf_chain),
             '-r', '30',
         ]
 
@@ -251,11 +289,11 @@ def main():
         except Exception as e:
             print(f'Error downloading image: {e}')
 
-    # 3. Add Text to Image
+    # 3. Add source credit to image (headline now drawn on the video itself)
     if download_success:
-        add_text_to_image(image_path, title, source_name)
+        add_text_to_image(image_path, source_name)
 
-    # 4. Convert Image to Video for Reel (with background music)
+    # 4. Convert Image to Video for Reel (with centered fading title + background music)
     message = f'🤖 {title}\n\n{description}\n\nvia {source_name}\n\n#AI #ArtificialIntelligence #TechNews'
 
     if download_success:
@@ -265,6 +303,7 @@ def main():
 
         video_created = convert_image_to_video(
             image_path, video_path,
+            title=title,
             duration=clip_duration,
             audio_path=audio_path,
             audio_start=audio_start
