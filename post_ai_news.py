@@ -60,6 +60,30 @@ def get_random_clip_start(audio_path, clip_duration):
     return round(random.uniform(0, max_start), 2)
 
 
+def resize_cover(img, target_width, target_height):
+    """Resize an image to completely fill target_width x target_height without
+    distorting it — scales proportionally to cover the frame, then center-crops
+    whatever spills over the edges (like CSS background-size: cover).
+    """
+    img_ratio = img.width / img.height
+    target_ratio = target_width / target_height
+
+    if img_ratio > target_ratio:
+        # Source is relatively wider than target -> match height, crop the sides
+        new_height = target_height
+        new_width = int(round(new_height * img_ratio))
+    else:
+        # Source is relatively taller/narrower than target -> match width, crop top/bottom
+        new_width = target_width
+        new_height = int(round(new_width / img_ratio))
+
+    img = img.resize((new_width, new_height), Image.LANCZOS)
+
+    left = (new_width - target_width) // 2
+    top = (new_height - target_height) // 2
+    return img.crop((left, top, left + target_width, top + target_height))
+
+
 def add_text_to_image(image_path, source_name):
     """Resize image for Reels and burn in a small bottom source credit.
     The main headline is no longer baked in here — it's drawn as an animated
@@ -69,11 +93,11 @@ def add_text_to_image(image_path, source_name):
     try:
         img = Image.open(image_path).convert("RGBA")
 
-        # Resize to vertical 9:16 ratio for Reels
+        # Fill the vertical 9:16 frame without stretching/distorting the photo
         target_width = 1080
         target_height = 1920
-        img = img.resize((target_width, target_height), Image.LANCZOS)
-        print(f"Image resized to {target_width}x{target_height} for Reels format.")
+        img = resize_cover(img, target_width, target_height)
+        print(f"Image cropped/filled to {target_width}x{target_height} for Reels format (no distortion).")
 
         overlay = Image.new('RGBA', img.size, (255, 255, 255, 0))
         draw = ImageDraw.Draw(overlay)
@@ -109,13 +133,40 @@ def add_text_to_image(image_path, source_name):
         return False
 
 
-def build_title_drawtext_filter(title, duration, font_path="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"):
-    """Write the wrapped title to a temp textfile and return an ffmpeg drawtext filter string
-    that positions it in the upper third of the video with a light transparent box.
-    Fades in over the first second, holds, then fades out with enough lead time to leave
-    the last 2 seconds of the clip completely clean (no text).
+def wrap_title_to_fit(title, box_width=940, box_padding=60, max_lines=4,
+                       font_path="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"):
+    """Pick the largest font size (from a fixed set) for which the title wraps into
+    at most `max_lines` lines that each fit inside box_width, using real measured
+    character widths (not a guessed character count). Falls back to the smallest
+    size with however many lines it takes if nothing fits within max_lines.
     """
-    wrapped_title = textwrap.fill(title, width=22)
+    usable_width = box_width - box_padding
+    candidate_sizes = [64, 54, 46, 38]
+
+    last_wrapped, last_size = None, candidate_sizes[-1]
+    for size in candidate_sizes:
+        font = ImageFont.truetype(font_path, size)
+        avg_char_width = font.getlength("Bengaluru Scaler School Technology") / 35
+        chars_per_line = max(int(usable_width / avg_char_width), 8)
+        wrapped = textwrap.fill(title, width=chars_per_line)
+        last_wrapped, last_size = wrapped, size
+        if len(wrapped.split('\n')) <= max_lines:
+            return wrapped, size
+
+    return last_wrapped, last_size
+
+
+def build_title_drawtext_filter(title, duration, font_path="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"):
+    """Write the wrapped title to a temp textfile and return an ffmpeg drawtext filter string.
+    The box has a fixed width (so it stays consistent regardless of title length) and the
+    text is centered both horizontally and per-line. Font size shrinks automatically for
+    longer titles so it stays readable instead of wrapping into many cramped lines.
+    Positioned in the upper third, fading in over the first second and out with enough
+    lead time to leave the last 2 seconds of the clip clean.
+    """
+    box_width = 940  # fixed width, leaves ~70px margin on each side of the 1080px frame
+    wrapped_title, font_size = wrap_title_to_fit(title, box_width=box_width, font_path=font_path)
+
     textfile_path = '/tmp/title_text.txt'
     with open(textfile_path, 'w') as f:
         f.write(wrapped_title)
@@ -132,9 +183,10 @@ def build_title_drawtext_filter(title, duration, font_path="/usr/share/fonts/tru
 
     drawtext = (
         f"drawtext=textfile='{textfile_path}':fontfile='{font_path}':"
-        f"fontsize=64:fontcolor=white:line_spacing=10:"
-        f"box=1:boxcolor=black@0.35:boxborderw=30:"
-        f"x=(w-text_w)/2:y=(h*0.30-text_h/2):"
+        f"fontsize={font_size}:fontcolor=white:line_spacing=14:"
+        f"text_align=center:"
+        f"box=1:boxcolor=black@0.35:boxborderw=30:boxw={box_width}:"
+        f"x=(w-{box_width})/2:y=(h*0.30-text_h/2):"
         f"alpha='{alpha_expr}'"
     )
     return drawtext
