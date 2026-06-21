@@ -2,6 +2,7 @@ import os
 import json
 import random
 import glob
+import re
 import requests
 import textwrap
 import subprocess
@@ -12,6 +13,22 @@ from PIL import Image, ImageDraw, ImageFont
 FB_PAGE_ID = os.environ.get('FB_PAGE_ID')
 FB_ACCESS_TOKEN = os.environ.get('FB_ACCESS_TOKEN')
 NEWS_API_KEY = os.environ.get('NEWS_API_KEY', '')
+
+
+def clean_source_name(raw_name):
+    """Strip any domain-like suffix (.com, .net, .co.uk, etc.) from a source name so it
+    never reads as a clickable URL in the post caption. Facebook auto-links bare domains
+    even in plain text, e.g. 'Ibtimes.com' -> 'Ibtimes'.
+    """
+    name = raw_name.strip()
+    # Strip a trailing TLD (and an optional second-level one like .co.uk) repeatedly,
+    # in case there's more than one (e.g. "site.co.uk").
+    while True:
+        new_name = re.sub(r'\.[a-zA-Z]{2,6}$', '', name)
+        if new_name == name:
+            break
+        name = new_name
+    return name.strip() or 'Unknown Source'
 
 # Folder where royalty-free background tracks live, organized by mood/genre.
 # Example layout:
@@ -62,20 +79,21 @@ def get_random_clip_start(audio_path, clip_duration):
     return round(random.uniform(0, max_start), 2)
 
 
-def fetch_second_image_url(article_url, exclude_url=None, headers=None, timeout=10):
-    """Scrape the article page for a second usable image, different from exclude_url
-    (the image NewsAPI already gave us). Skips obvious icons/logos/avatars/sprites.
-    Returns an absolute image URL, or None if nothing suitable is found.
+def fetch_second_image_candidates(article_url, exclude_url=None, headers=None, timeout=10, max_candidates=10):
+    """Scrape the article page for candidate second images, different from exclude_url
+    (the image NewsAPI already gave us). Skips obvious icons/logos/avatars/sprites by
+    filename. Returns a list of absolute image URLs in page order (best guesses first),
+    not yet validated by actual size — that happens after download.
     """
     try:
         resp = requests.get(article_url, headers=headers, timeout=timeout)
         if resp.status_code != 200:
             print(f"Could not fetch article page for second image. Status: {resp.status_code}")
-            return None
+            return []
 
         soup = BeautifulSoup(resp.text, 'html.parser')
         exclude_clean = exclude_url.split('?')[0] if exclude_url else None
-        skip_keywords = ('icon', 'logo', 'avatar', 'sprite', 'pixel', 'tracking')
+        skip_keywords = ('icon', 'logo', 'avatar', 'sprite', 'pixel', 'tracking', 'badge', 'button')
 
         candidates = []
         for img in soup.find_all('img'):
@@ -92,18 +110,71 @@ def fetch_second_image_url(article_url, exclude_url=None, headers=None, timeout=
             if not clean_url.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
                 continue
 
-            candidates.append(full_url)
+            # If the page declares width/height attributes, use them as a cheap
+            # pre-filter to skip obviously tiny graphics before even downloading.
+            try:
+                declared_w = int(img.get('width', 0))
+                declared_h = int(img.get('height', 0))
+                if 0 < declared_w < 300 or 0 < declared_h < 300:
+                    continue
+            except (ValueError, TypeError):
+                pass
+
+            if full_url not in candidates:
+                candidates.append(full_url)
+
+            if len(candidates) >= max_candidates:
+                break
 
         if not candidates:
-            print("No suitable second image found on article page.")
-            return None
-
-        chosen = candidates[0]
-        print(f"Found second image candidate: {chosen}")
-        return chosen
+            print("No suitable second image candidates found on article page.")
+        return candidates
     except Exception as e:
-        print(f"Failed to scrape second image: {e}")
-        return None
+        print(f"Failed to scrape second image candidates: {e}")
+        return []
+
+
+def is_valid_content_image(image_bytes, min_dimension=500, min_aspect=0.4, max_aspect=3.0):
+    """Reject images that are too small or too oddly shaped to be a real content
+    photo (catches logos, icons, thin banners, etc.) by checking actual pixel size."""
+    try:
+        from io import BytesIO
+        img = Image.open(BytesIO(image_bytes))
+        width, height = img.size
+        if width < min_dimension or height < min_dimension:
+            return False
+        aspect = width / height
+        if aspect < min_aspect or aspect > max_aspect:
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def fetch_and_validate_second_image(article_url, exclude_url, save_path, headers=None, timeout=10):
+    """Find a second image from the article that actually looks like a real photo
+    (not a logo/icon/banner) and save it to save_path. Returns True/False."""
+    candidates = fetch_second_image_candidates(article_url, exclude_url=exclude_url, headers=headers, timeout=timeout)
+
+    for url in candidates:
+        try:
+            resp = requests.get(url, headers=headers, timeout=timeout)
+            content_type = resp.headers.get('Content-Type', '')
+            if resp.status_code != 200 or 'image' not in content_type:
+                continue
+            if not is_valid_content_image(resp.content):
+                print(f"Skipped second-image candidate (too small/odd shape): {url}")
+                continue
+            with open(save_path, 'wb') as f:
+                f.write(resp.content)
+            print(f"Second image accepted: {url}")
+            return True
+        except Exception as e:
+            print(f"Error checking second-image candidate {url}: {e}")
+            continue
+
+    print("No valid second image found after checking all candidates.")
+    return False
 
 
 def download_image(url, save_path, headers=None, timeout=10):
@@ -465,7 +536,7 @@ def main():
     source_url = article['url']
 
     raw_source_name = article.get('source', {}).get('name', 'Unknown Source')
-    source_name = os.path.splitext(raw_source_name)[0]
+    source_name = clean_source_name(raw_source_name)
 
     description = article.get('description', 'No description available.')
     api_image_url = article.get('urlToImage', '')
@@ -485,11 +556,11 @@ def main():
             print('Image successfully downloaded.')
 
     if download_success:
-        second_image_url = fetch_second_image_url(source_url, exclude_url=api_image_url, headers=headers)
-        if second_image_url:
-            second_image_success = download_image(second_image_url, image2_path, headers=headers)
-            if second_image_success:
-                print('Second image successfully downloaded.')
+        second_image_success = fetch_and_validate_second_image(
+            source_url, exclude_url=api_image_url, save_path=image2_path, headers=headers
+        )
+        if second_image_success:
+            print('Second image successfully downloaded and validated.')
 
     # 3. Add source credit to image(s) (headline now drawn on the video itself)
     if download_success:
