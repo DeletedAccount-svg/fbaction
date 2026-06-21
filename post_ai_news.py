@@ -127,7 +127,7 @@ def fetch_second_image_candidates(article_url, exclude_url=None, headers=None, t
                 break
 
         if not candidates:
-            print("No suitable second image candidates found on article page.")
+            print("No suitable image candidates found on article page.")
         return candidates
     except Exception as e:
         print(f"Failed to scrape second image candidates: {e}")
@@ -151,9 +151,12 @@ def is_valid_content_image(image_bytes, min_dimension=500, min_aspect=0.4, max_a
         return False
 
 
-def fetch_and_validate_second_image(article_url, exclude_url, save_path, headers=None, timeout=10):
-    """Find a second image from the article that actually looks like a real photo
-    (not a logo/icon/banner) and save it to save_path. Returns True/False."""
+def fetch_and_validate_image_from_article(article_url, save_path, exclude_url=None, headers=None, timeout=10):
+    """Scrape the article page for a usable image (not a logo/icon/banner) and save it
+    to save_path. Used both as a fallback when NewsAPI's image fails to download, and
+    to find a *second*, different image for the slideshow (via exclude_url).
+    Returns the image URL on success, or None if nothing valid was found.
+    """
     candidates = fetch_second_image_candidates(article_url, exclude_url=exclude_url, headers=headers, timeout=timeout)
 
     for url in candidates:
@@ -163,18 +166,18 @@ def fetch_and_validate_second_image(article_url, exclude_url, save_path, headers
             if resp.status_code != 200 or 'image' not in content_type:
                 continue
             if not is_valid_content_image(resp.content):
-                print(f"Skipped second-image candidate (too small/odd shape): {url}")
+                print(f"Skipped image candidate (too small/odd shape): {url}")
                 continue
             with open(save_path, 'wb') as f:
                 f.write(resp.content)
-            print(f"Second image accepted: {url}")
-            return True
+            print(f"Image accepted from article scrape: {url}")
+            return url
         except Exception as e:
-            print(f"Error checking second-image candidate {url}: {e}")
+            print(f"Error checking image candidate {url}: {e}")
             continue
 
-    print("No valid second image found after checking all candidates.")
-    return False
+    print("No valid image found among article scrape candidates.")
+    return None
 
 
 def download_image(url, save_path, headers=None, timeout=10):
@@ -603,16 +606,28 @@ def main():
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     download_success = False
     second_image_success = False
+    used_image_url = None
 
     if api_image_url:
         download_success = download_image(api_image_url, image_path, headers=headers)
         if download_success:
             print('Image successfully downloaded.')
+            used_image_url = api_image_url
+
+    if not download_success:
+        # NewsAPI's image was missing or blocked (e.g. 403) - try scraping the
+        # article page itself for a usable photo before giving up on a video.
+        print('Primary image unavailable, trying to scrape one from the article page...')
+        scraped_url = fetch_and_validate_image_from_article(source_url, save_path=image_path, headers=headers)
+        if scraped_url:
+            download_success = True
+            used_image_url = scraped_url
+            print('Recovered an image by scraping the article page.')
 
     if download_success:
-        second_image_success = fetch_and_validate_second_image(
-            source_url, exclude_url=api_image_url, save_path=image2_path, headers=headers
-        )
+        second_image_success = bool(fetch_and_validate_image_from_article(
+            source_url, save_path=image2_path, exclude_url=used_image_url, headers=headers
+        ))
         if second_image_success:
             print('Second image successfully downloaded and validated.')
 
