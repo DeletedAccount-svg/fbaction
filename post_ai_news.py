@@ -461,7 +461,9 @@ def convert_two_images_to_video(image1_path, image2_path, video_path, title=None
 
 
 def upload_reel_to_facebook(video_path, message):
-    """Upload video as a Reel using Facebook Resumable Upload API"""
+    """Upload video as a Reel using Facebook Resumable Upload API.
+    Returns the video_id (str) on success, or None on failure.
+    """
 
     video_size = os.path.getsize(video_path)
     print(f"Video size: {video_size} bytes")
@@ -477,7 +479,7 @@ def upload_reel_to_facebook(video_path, message):
 
     if init_response.status_code != 200:
         print(f"Failed to initialize upload: {init_response.text}")
-        return False
+        return None
 
     video_id = init_response.json().get('video_id')
     print(f"Upload session started. Video ID: {video_id}")
@@ -496,7 +498,7 @@ def upload_reel_to_facebook(video_path, message):
 
     if upload_response.status_code != 200:
         print(f"Failed to upload video: {upload_response.text}")
-        return False
+        return None
 
     print("Video binary uploaded successfully!")
 
@@ -514,9 +516,39 @@ def upload_reel_to_facebook(video_path, message):
 
     if publish_response.status_code == 200:
         print(f"Reel published successfully! Response: {publish_response.json()}")
-        return True
+        return video_id
     else:
         print(f"Failed to publish Reel: {publish_response.text}")
+        return None
+
+
+def build_comment_message(description, source_url, snippet_length=200):
+    """Build a 'snippet... Read more: <link>' comment to post under the Reel/post,
+    keeping the actual link out of the main caption.
+    """
+    description = (description or '').strip()
+    if len(description) > snippet_length:
+        snippet = description[:snippet_length].rsplit(' ', 1)[0].rstrip('.,;:') + '...'
+    else:
+        snippet = description
+
+    return f"{snippet}\n\nRead more: {source_url}"
+
+
+def post_comment_to_facebook(object_id, message):
+    """Post a comment on a published Reel/post (by its object id). Returns True/False."""
+    try:
+        comment_url = f'https://graph.facebook.com/v19.0/{object_id}/comments'
+        payload = {'message': message, 'access_token': FB_ACCESS_TOKEN}
+        response = requests.post(comment_url, data=payload)
+        if response.status_code == 200:
+            print(f"Comment posted successfully on {object_id}.")
+            return True
+        else:
+            print(f"Failed to post comment on {object_id}: {response.text}")
+            return False
+    except Exception as e:
+        print(f"Error posting comment on {object_id}: {e}")
         return False
 
 
@@ -595,8 +627,11 @@ def main():
             )
         if video_created:
             # 5. Upload as Reel
-            success = upload_reel_to_facebook(video_path, message)
-            if not success:
+            reel_video_id = upload_reel_to_facebook(video_path, message)
+            if reel_video_id:
+                comment_message = build_comment_message(description, source_url)
+                post_comment_to_facebook(reel_video_id, comment_message)
+            else:
                 # Fallback to regular feed post with link
                 print("Reel upload failed, falling back to text post...")
                 fb_api_url = f'https://graph.facebook.com/v19.0/{FB_PAGE_ID}/feed'
@@ -604,6 +639,10 @@ def main():
                 fb_response = requests.post(fb_api_url, data=payload)
                 if fb_response.status_code == 200:
                     print('Fallback post successful!')
+                    fallback_post_id = fb_response.json().get('id')
+                    if fallback_post_id:
+                        comment_message = build_comment_message(description, source_url)
+                        post_comment_to_facebook(fallback_post_id, comment_message)
                 else:
                     print(f'Fallback also failed: {fb_response.text}')
                     exit(1)
@@ -618,6 +657,10 @@ def main():
         fb_response = requests.post(fb_api_url, data=payload)
         if fb_response.status_code == 200:
             print('Successfully posted to Facebook!')
+            post_id = fb_response.json().get('id')
+            if post_id:
+                comment_message = build_comment_message(description, source_url)
+                post_comment_to_facebook(post_id, comment_message)
         else:
             print(f'Failed to post: {fb_response.text}')
             exit(1)
