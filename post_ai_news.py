@@ -585,7 +585,8 @@ def main():
     data = response.json()
 
     if data.get('status') != 'ok' or not data.get('articles'):
-        print('Failed to fetch news or no articles found.')
+        print(f"::warning::NewsAPI request failed. HTTP status: {response.status_code}")
+        print(f"::warning::NewsAPI response: code={data.get('code')}, message={data.get('message')}")
         exit(1)
 
     article = data['articles'][0]
