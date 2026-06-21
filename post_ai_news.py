@@ -536,20 +536,42 @@ def build_comment_message(description, source_url, snippet_length=200):
 
 
 def post_comment_to_facebook(object_id, message):
-    """Post a comment on a published Reel/post (by its object id). Returns True/False."""
-    try:
-        comment_url = f'https://graph.facebook.com/v19.0/{object_id}/comments'
+    """Post a comment on a published Reel/post (by its object id). Returns True/False.
+    If commenting directly on object_id fails, tries falling back to its underlying
+    post_id (some video objects, including Reels, expose a separate post_id that's
+    the actual commentable target).
+    """
+    def try_comment(target_id):
+        comment_url = f'https://graph.facebook.com/v19.0/{target_id}/comments'
         payload = {'message': message, 'access_token': FB_ACCESS_TOKEN}
-        response = requests.post(comment_url, data=payload)
-        if response.status_code == 200:
-            print(f"Comment posted successfully on {object_id}.")
-            return True
-        else:
-            print(f"Failed to post comment on {object_id}: {response.text}")
-            return False
+        return requests.post(comment_url, data=payload)
+
+    response = try_comment(object_id)
+    if response.status_code == 200:
+        print(f"Comment posted successfully on {object_id}.")
+        return True
+
+    print(f"::warning::Failed to post comment on {object_id}: {response.text}")
+
+    # Fallback: some video objects (Reels included) expose a separate post_id
+    # that's the actual commentable target.
+    try:
+        lookup = requests.get(
+            f'https://graph.facebook.com/v19.0/{object_id}',
+            params={'fields': 'post_id', 'access_token': FB_ACCESS_TOKEN}
+        )
+        post_id = lookup.json().get('post_id')
+        if post_id and post_id != object_id:
+            print(f"Retrying comment using post_id: {post_id}")
+            retry_response = try_comment(post_id)
+            if retry_response.status_code == 200:
+                print(f"Comment posted successfully on fallback post_id {post_id}.")
+                return True
+            print(f"::warning::Fallback comment on {post_id} also failed: {retry_response.text}")
     except Exception as e:
-        print(f"Error posting comment on {object_id}: {e}")
-        return False
+        print(f"Error during post_id fallback lookup: {e}")
+
+    return False
 
 
 def main():
