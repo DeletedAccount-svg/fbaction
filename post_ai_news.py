@@ -5,6 +5,8 @@ import glob
 import requests
 import textwrap
 import subprocess
+from urllib.parse import urljoin
+from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFont
 
 FB_PAGE_ID = os.environ.get('FB_PAGE_ID')
@@ -58,6 +60,66 @@ def get_random_clip_start(audio_path, clip_duration):
         return 0
     max_start = total_duration - clip_duration
     return round(random.uniform(0, max_start), 2)
+
+
+def fetch_second_image_url(article_url, exclude_url=None, headers=None, timeout=10):
+    """Scrape the article page for a second usable image, different from exclude_url
+    (the image NewsAPI already gave us). Skips obvious icons/logos/avatars/sprites.
+    Returns an absolute image URL, or None if nothing suitable is found.
+    """
+    try:
+        resp = requests.get(article_url, headers=headers, timeout=timeout)
+        if resp.status_code != 200:
+            print(f"Could not fetch article page for second image. Status: {resp.status_code}")
+            return None
+
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        exclude_clean = exclude_url.split('?')[0] if exclude_url else None
+        skip_keywords = ('icon', 'logo', 'avatar', 'sprite', 'pixel', 'tracking')
+
+        candidates = []
+        for img in soup.find_all('img'):
+            src = img.get('src') or img.get('data-src')
+            if not src:
+                continue
+            full_url = urljoin(article_url, src)
+            clean_url = full_url.split('?')[0]
+
+            if exclude_clean and clean_url == exclude_clean:
+                continue
+            if any(keyword in clean_url.lower() for keyword in skip_keywords):
+                continue
+            if not clean_url.lower().endswith(('.jpg', '.jpeg', '.png', '.webp')):
+                continue
+
+            candidates.append(full_url)
+
+        if not candidates:
+            print("No suitable second image found on article page.")
+            return None
+
+        chosen = candidates[0]
+        print(f"Found second image candidate: {chosen}")
+        return chosen
+    except Exception as e:
+        print(f"Failed to scrape second image: {e}")
+        return None
+
+
+def download_image(url, save_path, headers=None, timeout=10):
+    """Download an image URL to disk. Returns True on success, False otherwise."""
+    try:
+        response = requests.get(url, headers=headers, timeout=timeout)
+        content_type = response.headers.get('Content-Type', '')
+        if response.status_code == 200 and 'image' in content_type:
+            with open(save_path, 'wb') as f:
+                f.write(response.content)
+            return True
+        print(f"Failed to download image ({url}). Status: {response.status_code}")
+        return False
+    except Exception as e:
+        print(f"Error downloading image ({url}): {e}")
+        return False
 
 
 def resize_cover(img, target_width, target_height):
@@ -156,29 +218,29 @@ def wrap_title_to_fit(title, box_width=940, box_padding=60, max_lines=4,
     return last_wrapped, last_size
 
 
-def build_title_drawtext_filter(title, duration, font_path="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"):
-    """Write the wrapped title to a temp textfile and return an ffmpeg drawtext filter string.
-    The box has a fixed width (so it stays consistent regardless of title length) and the
-    text is centered both horizontally and per-line. Font size shrinks automatically for
-    longer titles so it stays readable instead of wrapping into many cramped lines.
-    Positioned in the upper third, fading in over the first second and out with enough
-    lead time to leave the last 2 seconds of the clip clean.
+def build_segment_text_filter(text, window_start, window_end, textfile_path,
+                               fade=1.0, position_y_frac=0.30,
+                               font_path="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"):
+    """Write wrapped text to textfile_path and return an ffmpeg drawtext filter string that
+    is only visible between window_start and window_end (seconds into the clip), fading in
+    over `fade` seconds at window_start and fading out over `fade` seconds before window_end.
+    Outside that window the text is fully transparent (alpha=0), so multiple of these can be
+    chained on the same clip to show different text at different times.
     """
-    box_width = 940  # fixed width, leaves ~70px margin on each side of the 1080px frame
-    wrapped_title, font_size = wrap_title_to_fit(title, box_width=box_width, font_path=font_path)
-
-    textfile_path = '/tmp/title_text.txt'
+    wrapped_text, font_size = wrap_title_to_fit(text)
     with open(textfile_path, 'w') as f:
-        f.write(wrapped_title)
+        f.write(wrapped_text)
 
-    clean_tail = 2  # seconds at the end with no title visible
-    fade_out_end = max(duration - clean_tail, 0)
-    fade_out_start = max(fade_out_end - 1, 0)
+    box_width = 940  # fixed width, leaves ~70px margin on each side of the 1080px frame
+
+    fade_in_end = window_start + fade
+    fade_out_start = max(window_end - fade, fade_in_end)
 
     alpha_expr = (
-        f"if(lt(t\\,1)\\,t\\,"
+        f"if(lt(t\\,{window_start})\\,0\\,"
+        f"if(lt(t\\,{fade_in_end})\\,(t-{window_start})/{fade}\\,"
         f"if(lt(t\\,{fade_out_start})\\,1\\,"
-        f"if(lt(t\\,{fade_out_end})\\,({fade_out_end}-t)\\,0)))"
+        f"if(lt(t\\,{window_end})\\,({window_end}-t)/{fade}\\,0))))"
     )
 
     drawtext = (
@@ -186,14 +248,25 @@ def build_title_drawtext_filter(title, duration, font_path="/usr/share/fonts/tru
         f"fontsize={font_size}:fontcolor=white:line_spacing=14:"
         f"text_align=center:"
         f"box=1:boxcolor=black@0.35:boxborderw=30:boxw={box_width}:"
-        f"x=(w-{box_width})/2:y=(h*0.30-text_h/2):"
+        f"x=(w-{box_width})/2:y=(h*{position_y_frac}-text_h/2):"
         f"alpha='{alpha_expr}'"
     )
     return drawtext
 
 
-def convert_image_to_video(image_path, video_path, title=None, duration=10, audio_path=None, audio_start=0):
-    """Convert image to a 10-second video using ffmpeg - required for Reels.
+def build_title_drawtext_filter(title, duration, font_path="/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"):
+    """Title overlay spanning the whole clip: fades in over the first second, holds,
+    and fades out with enough lead time to leave the last 2 seconds of the clip clean.
+    """
+    clean_tail = 2
+    return build_segment_text_filter(
+        title, window_start=0, window_end=max(duration - clean_tail, 1),
+        textfile_path='/tmp/title_text.txt', fade=1.0, font_path=font_path
+    )
+
+
+def convert_image_to_video(image_path, video_path, title=None, duration=15, audio_path=None, audio_start=0):
+    """Convert image to a video using ffmpeg - required for Reels.
     If title is provided, it's drawn centered on the video in a light transparent box,
     fading in over the first second and out over the last second.
     If audio_path is provided, a clip of that track (starting at audio_start) is mixed in
@@ -236,6 +309,83 @@ def convert_image_to_video(image_path, video_path, title=None, duration=10, audi
             return False
     except Exception as e:
         print(f"Failed to convert image to video: {e}")
+        return False
+
+
+def convert_two_images_to_video(image1_path, image2_path, video_path, title=None, second_text=None,
+                                 duration=15, transition=1.0, audio_path=None, audio_start=0):
+    """Build a Reel that crossfades from image1 to image2 partway through, with the title
+    shown (fading in/out) over image1's portion and second_text shown over image2's portion.
+    Music spans the full clip. Both images must already be sized to 1080x1920 (e.g. via
+    resize_cover).
+    """
+    try:
+        clean_tail = 2  # seconds at the very end left completely clean (no text)
+
+        # Each image is shown for half the clip, plus half the transition overlap, so the
+        # combined crossfaded output lands exactly on `duration` seconds total.
+        half_duration = duration / 2 + transition / 2
+        offset = half_duration - transition  # when the crossfade begins, in the timeline of clip 1
+
+        cmd = [
+            'ffmpeg', '-y',
+            '-loop', '1', '-t', str(half_duration), '-i', image1_path,
+            '-loop', '1', '-t', str(half_duration), '-i', image2_path,
+        ]
+
+        if audio_path:
+            cmd += ['-ss', str(audio_start), '-t', str(duration), '-i', audio_path]
+
+        filter_parts = [
+            f'[0:v][1:v]xfade=transition=fade:duration={transition}:offset={offset},format=yuv420p[vcat]'
+        ]
+
+        last_label = '[vcat]'
+        if title:
+            filter_parts.append(
+                f'{last_label}{build_segment_text_filter(title, 0, offset, "/tmp/title_text_1.txt")}[vtext1]'
+            )
+            last_label = '[vtext1]'
+        if second_text:
+            text2_start = offset + transition
+            text2_end = max(duration - clean_tail, text2_start + 1)
+            filter_parts.append(
+                f'{last_label}{build_segment_text_filter(second_text, text2_start, text2_end, "/tmp/title_text_2.txt")}[vtext2]'
+            )
+            last_label = '[vtext2]'
+
+        cmd += ['-filter_complex', ';'.join(filter_parts)]
+        cmd += ['-map', last_label]
+
+        if audio_path:
+            cmd += ['-map', '2:a']
+
+        cmd += [
+            '-c:v', 'libx264',
+            '-pix_fmt', 'yuv420p',
+            '-r', '30',
+            '-t', str(duration),
+        ]
+
+        if audio_path:
+            fade_out_start = max(duration - 2, 0)
+            cmd += [
+                '-c:a', 'aac',
+                '-af', f'afade=t=in:st=0:d=1,afade=t=out:st={fade_out_start}:d=2',
+                '-shortest',
+            ]
+
+        cmd += [video_path]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0:
+            print(f"Slideshow video created successfully: {video_path}")
+            return True
+        else:
+            print(f"ffmpeg error: {result.stderr}")
+            return False
+    except Exception as e:
+        print(f"Failed to convert two images to video: {e}")
         return False
 
 
@@ -321,45 +471,57 @@ def main():
     api_image_url = article.get('urlToImage', '')
     print(f'Fetched Article: {title} from {source_name}')
 
-    # 2. Download Image
+    # 2. Download Image(s)
     image_path = '/tmp/news_image.jpg'
+    image2_path = '/tmp/news_image_2.jpg'
     video_path = '/tmp/news_reel.mp4'
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
     download_success = False
+    second_image_success = False
 
     if api_image_url:
-        try:
-            img_response = requests.get(api_image_url, headers=headers, timeout=10)
-            content_type = img_response.headers.get('Content-Type', '')
-            if img_response.status_code == 200 and 'image' in content_type:
-                with open(image_path, 'wb') as f:
-                    f.write(img_response.content)
-                download_success = True
-                print('Image successfully downloaded.')
-            else:
-                print(f'Failed to download image. Status: {img_response.status_code}')
-        except Exception as e:
-            print(f'Error downloading image: {e}')
+        download_success = download_image(api_image_url, image_path, headers=headers)
+        if download_success:
+            print('Image successfully downloaded.')
 
-    # 3. Add source credit to image (headline now drawn on the video itself)
+    if download_success:
+        second_image_url = fetch_second_image_url(source_url, exclude_url=api_image_url, headers=headers)
+        if second_image_url:
+            second_image_success = download_image(second_image_url, image2_path, headers=headers)
+            if second_image_success:
+                print('Second image successfully downloaded.')
+
+    # 3. Add source credit to image(s) (headline now drawn on the video itself)
     if download_success:
         add_text_to_image(image_path, source_name)
+    if second_image_success:
+        add_text_to_image(image2_path, source_name)
 
-    # 4. Convert Image to Video for Reel (with centered fading title + background music)
+    # 4. Convert Image(s) to Video for Reel (with centered fading title + background music)
     message = f'🤖 {title}\n\n{description}\n\nvia {source_name}\n\n#AI #ArtificialIntelligence #TechNews'
 
     if download_success:
-        clip_duration = 10
+        clip_duration = 15
         audio_path = pick_music_track()
         audio_start = get_random_clip_start(audio_path, clip_duration) if audio_path else 0
 
-        video_created = convert_image_to_video(
-            image_path, video_path,
-            title=title,
-            duration=clip_duration,
-            audio_path=audio_path,
-            audio_start=audio_start
-        )
+        if second_image_success:
+            video_created = convert_two_images_to_video(
+                image_path, image2_path, video_path,
+                title=title,
+                second_text=description,
+                duration=clip_duration,
+                audio_path=audio_path,
+                audio_start=audio_start
+            )
+        else:
+            video_created = convert_image_to_video(
+                image_path, video_path,
+                title=title,
+                duration=clip_duration,
+                audio_path=audio_path,
+                audio_start=audio_start
+            )
         if video_created:
             # 5. Upload as Reel
             success = upload_reel_to_facebook(video_path, message)
