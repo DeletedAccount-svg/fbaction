@@ -1,0 +1,38 @@
+name: PH News Instagram Carousel (Peso Weekly Style)
+
+on:
+  schedule:
+    - cron: '0 23 * * *'   # 7:00 AM Manila (GMT+8)
+    - cron: '0 1  * * *'   # 9:00 AM Manila
+    - cron: '0 4  * * *'   # 12:00 PM Manila (noon)
+    - cron: '0 7  * * *'   # 3:00 PM Manila
+    - cron: '0 9  * * *'   # 5:00 PM Manila
+    - cron: '0 11 * * *'   # 7:00 PM Manila
+  workflow_dispatch:       # allows manual trigger from GitHub UI
+
+jobs:
+  post-carousel:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests Pillow
+
+      - name: Run PH News Instagram Poster
+        env:
+          IG_USER_ID:      ${{ secrets.IG_USER_ID }}
+          FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
+          IMGBB_API_KEY:   ${{ secrets.IMGBB_API_KEY }}
+          GROQ_API_KEY:    ${{ secrets.GROQ_API_KEY }}
+          PAGE_NAME:       ${{ secrets.PAGE_NAME }}
+        run: python post_ph_news_ig.py
