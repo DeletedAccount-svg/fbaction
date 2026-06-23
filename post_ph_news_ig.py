@@ -597,6 +597,20 @@ def publish_media(creation_id: str) -> str:
     return data["id"]
 
 
+def post_comment(media_id: str, message: str) -> str:
+    """Post a comment on a published Instagram media object."""
+    r = requests.post(
+        f"{IG_BASE}/{media_id}/comments",
+        params={"access_token": FB_ACCESS_TOKEN},
+        data={"message": message},
+        timeout=30,
+    )
+    if not r.ok:
+        print(f"  ⚠️  Comment API error: {r.status_code} — {r.text}")
+    r.raise_for_status()
+    return r.json().get("id", "")
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CAPTION
 # ─────────────────────────────────────────────────────────────────────────────
@@ -616,8 +630,7 @@ def build_caption(article: dict) -> str:
     return (
         f"{emoji} {article['title']}\n\n"
         "👉 I-swipe para sa buong kwento!\n\n"
-        f"{tags} #Philippines #Pilipinas #PinoyNews\n\n"
-        f"📰 Source: {article['link']}"
+        f"{tags} #Philippines #Pilipinas #PinoyNews"
     )
 
 
@@ -717,7 +730,26 @@ def main():
     print("\n🚀 Publishing to Instagram…")
     post_id = publish_media(carousel_id)
     print(f"\n✅ SUCCESS! Post ID: {post_id}")
-    print("🔥 Salamat! Mabuhay ang automation! 🇵🇭")
+
+    # ── Post comments (source + site)
+    time.sleep(5)  # brief pause before commenting
+    print("\n💬 Posting comments…")
+
+    try:
+        c1 = post_comment(post_id, f"📰 Source: {article['link']}")
+        print(f"   ✅ Comment 1 posted (source): {c1}")
+    except Exception as e:
+        print(f"   ⚠️  Could not post source comment: {e}")
+
+    time.sleep(3)
+
+    try:
+        c2 = post_comment(post_id, "🌐 Visit us at https://ranksorcery.com/ for more! 🔥")
+        print(f"   ✅ Comment 2 posted (site): {c2}")
+    except Exception as e:
+        print(f"   ⚠️  Could not post site comment: {e}")
+
+    print("\n🔥 Salamat! Mabuhay ang automation! 🇵🇭")
     print("=" * 60)
 
 
