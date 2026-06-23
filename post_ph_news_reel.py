@@ -15,7 +15,8 @@ HOW IT DIFFERS FROM THE CAROUSEL VERSION:
 Required GitHub Secrets (same as carousel version):
   IG_USER_ID       — Instagram Business/Creator User ID (from Graph API)
   FB_ACCESS_TOKEN  — Facebook Page Access Token with instagram_content_publish
-  IMGBB_API_KEY    — Free at imgbb.com (used to host the final MP4 publicly)
+  (No IMGBB_API_KEY needed anymore — video is hosted via a throwaway
+   GitHub Release in this repo, using the built-in GITHUB_TOKEN.)
   PAGE_NAME        — Your Instagram handle WITHOUT the @, e.g. yourpage.ph
 
 Optional:
@@ -48,7 +49,7 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────────────────────
 IG_USER_ID      = os.environ["IG_USER_ID"]
 FB_ACCESS_TOKEN = os.environ["FB_ACCESS_TOKEN"]
-IMGBB_API_KEY   = os.environ["IMGBB_API_KEY"]
+GH_RELEASE_TOKEN = os.environ.get("GH_RELEASE_TOKEN", os.environ.get("GITHUB_TOKEN", ""))
 GROQ_API_KEY    = os.environ.get("GROQ_API_KEY", "")
 PAGE_NAME       = os.environ.get("PAGE_NAME", "yourpage.ph")
 
@@ -834,31 +835,99 @@ def build_reel(images: list, output_path: str, has_music: bool) -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# VIDEO UPLOAD (imgbb supports MP4 via direct URL method)
+# VIDEO UPLOAD (throwaway GitHub Release asset — public direct-download URL)
 # We upload to a temporary file host that returns a public URL for the IG API.
-# Strategy: base64 encode to imgbb (works for video under ~32MB)
+# Strategy: create a release, attach the MP4 as an asset, grab its
+# browser_download_url, then delete the release once IG has the video.
 # ─────────────────────────────────────────────────────────────────────────────
-def upload_video_to_imgbb(video_path: str) -> str:
-    """Upload MP4 to imgbb and return the public URL."""
-    size_mb = os.path.getsize(video_path) / 1024 / 1024
-    print(f"  ☁️  Uploading video ({size_mb:.1f} MB) to imgbb…")
+def create_github_release(tag: str, repo: str, token: str) -> dict:
+    """Create a new (non-draft) GitHub release to attach the video asset to."""
+    r = requests.post(
+        f"https://api.github.com/repos/{repo}/releases",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        },
+        json={
+            "tag_name": tag,
+            "name": tag,
+            "body": "Auto-generated Reel video asset — safe to delete.",
+            "draft": False,
+            "prerelease": False,
+        },
+        timeout=30,
+    )
+    if not r.ok:
+        print(f"  GitHub release create error: {r.status_code} — {r.text}")
+    r.raise_for_status()
+    return r.json()
+
+
+def upload_asset_to_release(upload_url: str, video_path: str, token: str) -> str:
+    """Upload the MP4 as a release asset. Returns the public browser_download_url."""
+    # upload_url comes back like ".../assets{?name,label}" — strip the template part
+    upload_url = upload_url.split("{")[0]
+    filename = os.path.basename(video_path)
 
     with open(video_path, "rb") as f:
-        video_b64 = base64.b64encode(f.read()).decode()
+        data = f.read()
 
     r = requests.post(
-        "https://api.imgbb.com/1/upload",
-        data={
-            "key":        IMGBB_API_KEY,
-            "image":      video_b64,
-            "expiration": 3600,   # 1 hour — enough for IG to pull it
+        upload_url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "Content-Type": "video/mp4",
         },
-        timeout=120,
+        params={"name": filename},
+        data=data,
+        timeout=180,
     )
+    if not r.ok:
+        print(f"  GitHub asset upload error: {r.status_code} — {r.text}")
     r.raise_for_status()
-    url = r.json()["data"]["url"]
+    return r.json()["browser_download_url"]
+
+
+def delete_github_release(release_id: int, repo: str, token: str) -> None:
+    """Best-effort cleanup — delete the release after IG has fetched the video."""
+    try:
+        requests.delete(
+            f"https://api.github.com/repos/{repo}/releases/{release_id}",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+            timeout=30,
+        )
+    except Exception as e:
+        print(f"  ⚠️  Could not clean up release: {e} (not fatal — delete manually if you like)")
+
+
+def upload_video_to_github_release(video_path: str) -> tuple:
+    """
+    Upload the MP4 as an asset on a throwaway GitHub Release in this repo.
+    Returns (public_url, release_id) — release_id lets the caller clean up
+    after Instagram has finished pulling the video.
+
+    Requires:
+      GITHUB_TOKEN       — auto-provided by Actions (needs 'contents: write' permission)
+      GITHUB_REPOSITORY  — auto-provided by Actions, e.g. "owner/repo"
+    NOTE: the repo must be PUBLIC — Instagram's servers fetch the asset URL
+    without any auth header, and private-repo release assets require auth to download.
+    """
+    repo  = os.environ["GITHUB_REPOSITORY"]
+    token = GH_RELEASE_TOKEN
+    if not token:
+        raise RuntimeError("No GH_RELEASE_TOKEN or GITHUB_TOKEN available — can't create a release.")
+
+    size_mb = os.path.getsize(video_path) / 1024 / 1024
+    print(f"  ☁️  Uploading video ({size_mb:.1f} MB) to a GitHub Release…")
+
+    tag = f"reel-{int(time.time())}"
+    release = create_github_release(tag, repo, token)
+    print(f"  📦 Release created: {tag} (id={release['id']})")
+
+    url = upload_asset_to_release(release["upload_url"], video_path, token)
     print(f"  ✅ Video hosted at: {url}")
-    return url
+    return url, release["id"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1018,9 +1087,9 @@ def main():
     output_path = "/tmp/ph_news_reel.mp4"
     build_reel(images, output_path, has_music)
 
-    # ── Upload video to imgbb
+    # ── Upload video to a throwaway GitHub Release
     print("\n☁️  Uploading video…")
-    video_url = upload_video_to_imgbb(output_path)
+    video_url, release_id = upload_video_to_github_release(output_path)
 
     # ── Build caption
     caption = build_caption(article)
@@ -1058,6 +1127,10 @@ def main():
 
     print("\n🔥 Salamat! Mabuhay ang automation! 🇵🇭")
     print("=" * 60)
+
+    # ── Clean up the throwaway release/asset now that IG has the video
+    print("\n🧹 Cleaning up temporary GitHub release…")
+    delete_github_release(release_id, os.environ["GITHUB_REPOSITORY"], GH_RELEASE_TOKEN)
 
 
 if __name__ == "__main__":
