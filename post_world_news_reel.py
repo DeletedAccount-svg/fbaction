@@ -591,7 +591,7 @@ def fit_text(draw, text: str, font_size: int, max_w: int, max_lines: int, bold=T
 def crop_needed_size(img: Image.Image, target_w: int, target_h: int, centering_y: float = 0.35) -> Image.Image:
     """
     Fills the entire target size by maintaining aspect ratio and cropping.
-    Guarantees no black bars, no squishing, and zero pixelation.
+    Used for the blurred background.
     """
     src_w, src_h = img.size
     scale = max(target_w / src_w, target_h / src_h)
@@ -607,19 +607,34 @@ def crop_needed_size(img: Image.Image, target_w: int, target_h: int, centering_y
     return img_resized.crop((crop_x, crop_y, crop_x + target_w, crop_y + target_h))
 
 
-def apply_clean_gradient(img: Image.Image) -> Image.Image:
-    """Applies a clean dark gradient overlay that is darkest in the center, ensuring text readability."""
-    overlay = Image.new("RGBA", (IMG_W, IMG_H), (0, 0, 0, 0))
-    od = ImageDraw.Draw(overlay)
-    center_y = IMG_H // 2
-    for y in range(IMG_H):
-        dist = abs(y - center_y) / center_y  # 0 at center, 1 at edges
-        # Darker in center (~160 alpha), lighter at edges (~80 alpha)
-        alpha = int(160 - 80 * dist)
-        od.line([(0, y), (IMG_W, y)], fill=(0, 0, 0, alpha))
-    img_rgba = img.convert("RGBA")
-    img_rgba.alpha_composite(overlay)
-    return img_rgba.convert("RGB")
+def create_blurred_bg_and_fg(img: Image.Image, target_w: int, target_h: int):
+    """
+    Creates a blurred background that fills the screen, and a sharp
+    foreground image that fits natively without upscaling.
+    Returns (bg_image, fg_image, fg_w, fg_h)
+    """
+    # 1. Blurred Background
+    bg = crop_needed_size(img, target_w, target_h)
+    bg = bg.filter(ImageFilter.GaussianBlur(radius=30))
+    bg = ImageEnhance.Brightness(bg).enhance(0.4)
+    
+    # 2. Sharp Foreground
+    src_w, src_h = img.size
+    max_w = target_w - 80  # small margin on sides
+    max_h = int(target_h * 0.50) # max 50% of screen height
+    
+    # Scale to fit inside max_w x max_h
+    scale = min(max_w / src_w, max_h / src_h)
+    
+    # Cap upscaling to 1.5x to prevent tiny images from becoming blurry
+    if scale > 1.5: scale = 1.5  
+    
+    new_w = int(src_w * scale)
+    new_h = int(src_h * scale)
+    fg = img.resize((new_w, new_h), Image.LANCZOS)
+    fg = fg.filter(ImageFilter.UnsharpMask(radius=1.2, percent=120, threshold=3))
+    
+    return bg, fg, new_w, new_h
 
 
 def create_slide(text: str, idx: int, total: int, category: str,
@@ -658,14 +673,28 @@ def create_slide(text: str, idx: int, total: int, category: str,
     # ── HOOK & CONTENT SLIDES (Unified Clean Layout)
     if not is_cta:
         if use_photo:
-            # Fill the entire screen with the photo
-            photo = crop_needed_size(article_photo, IMG_W, IMG_H, centering_y=0.35)
-            photo = photo.filter(ImageFilter.UnsharpMask(radius=1.2, percent=130, threshold=3))
-            img.paste(photo, (0, 0))
+            # Get blurred bg and sharp fg
+            bg_photo, fg_photo, fg_w, fg_h = create_blurred_bg_and_fg(article_photo, IMG_W, IMG_H)
+            img.paste(bg_photo, (0, 0))
             
-            # Apply the clean gradient overlay
-            img = apply_clean_gradient(img)
+            # Paste sharp foreground image at top, horizontally centered
+            paste_x = (IMG_W - fg_w) // 2
+            paste_y = 120
+            img.paste(fg_photo, (paste_x, paste_y))
+            
+            # Apply clean dark gradient overlay for text readability
+            overlay = Image.new("RGBA", (IMG_W, IMG_H), (0, 0, 0, 0))
+            od = ImageDraw.Draw(overlay)
+            start_y = int(IMG_H * 0.35)  # Start fading from 35% down
+            for y in range(start_y, IMG_H):
+                progress = (y - start_y) / (IMG_H - start_y)
+                alpha = int(225 * (progress ** 1.4))  # Smooth curve, up to 225 opacity
+                od.line([(0, y), (IMG_W, y)], fill=(0, 0, 0, alpha))
+            img_rgba = img.convert("RGBA")
+            img_rgba.alpha_composite(overlay)
+            img = img_rgba.convert("RGB")
             draw = ImageDraw.Draw(img)
+            
         else:
             # No photo: Simple dark gradient
             overlay = Image.new("RGBA", (IMG_W, IMG_H), (0, 0, 0, 0))
@@ -706,8 +735,10 @@ def create_slide(text: str, idx: int, total: int, category: str,
                 all_lines.extend([(l, colour) for l in chunk_lines])
 
             total_text_h = len(all_lines) * lh
-            # TRUE VERTICAL CENTER: Centered around the middle of the screen (minus bottom bar)
-            y = (IMG_H - 90) // 2 - total_text_h // 2
+            # Center text in the lower-middle zone (between 55% and 88% height)
+            text_zone_top = int(IMG_H * 0.55)
+            text_zone_bot = int(IMG_H * 0.88)
+            y = text_zone_top + (text_zone_bot - text_zone_top - total_text_h) // 2
 
             for line_txt, line_col in all_lines:
                 bx = draw.textbbox((0, 0), line_txt, font=font_h)[2]
@@ -727,8 +758,10 @@ def create_slide(text: str, idx: int, total: int, category: str,
             lh = fs + 24
             th = len(lines) * lh
             
-            # TRUE VERTICAL CENTER: Centered around the middle of the screen (minus bottom bar)
-            ty = (IMG_H - 90) // 2 - th // 2
+            # Center text in the lower-middle zone (between 55% and 88% height)
+            text_zone_top = int(IMG_H * 0.55)
+            text_zone_bot = int(IMG_H * 0.88)
+            ty = text_zone_top + (text_zone_bot - text_zone_top - th) // 2
 
             # Draw Label above text
             if label:
@@ -885,8 +918,8 @@ def build_reel(images: list, output_path: str, has_music: bool) -> str:
         fps=FPS,
         codec="libx264",
         audio_codec="aac",
-        preset="fast",
-        ffmpeg_params=["-crf", "23", "-pix_fmt", "yuv420p"],
+        preset="medium",  # Better quality encoding preset
+        ffmpeg_params=["-crf", "20", "-pix_fmt", "yuv420p"],  # Lower CRF = higher quality (less pixelation)
         logger=None,
     )
     print(f"  ✅ Video rendered! Size: {os.path.getsize(output_path) / 1024 / 1024:.1f} MB")
