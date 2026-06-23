@@ -195,11 +195,8 @@ def get_font(size: int, bold: bool = True) -> ImageFont.FreeTypeFont:
 # ─────────────────────────────────────────────────────────────────────────────
 # MUSIC — pure-Python lofi beat generator (no download, no external service)
 # ─────────────────────────────────────────────────────────────────────────────
-# UGH! BEAT MAKER WORK WITH ROCK AND STICK ONLY. NO NEED FETCH FIRE FROM
-# OTHER TRIBE SERVER. ALWAYS WORK. ALWAYS THERE. GRUNT.
 
 def _note_freq(semitones_from_a4: float) -> float:
-    """Return frequency in Hz for a note N semitones away from A4 (440Hz)."""
     return 440.0 * (2.0 ** (semitones_from_a4 / 12.0))
 
 
@@ -209,7 +206,6 @@ def _sine(freq: float, dur: float, sr: int, amp: float = 1.0) -> np.ndarray:
 
 
 def _envelope(n: int, attack: float = 0.02, release: float = 0.3) -> np.ndarray:
-    """Simple attack/release envelope so notes don't click."""
     env = np.ones(n)
     a = max(1, int(n * attack))
     r = max(1, int(n * release))
@@ -219,7 +215,6 @@ def _envelope(n: int, attack: float = 0.02, release: float = 0.3) -> np.ndarray:
 
 
 def _lowpass(signal: np.ndarray, strength: float = 0.85) -> np.ndarray:
-    """Crude one-pole lowpass filter — gives that muffled lofi warmth."""
     out = np.zeros_like(signal)
     out[0] = signal[0]
     for i in range(1, len(signal)):
@@ -230,7 +225,7 @@ def _lowpass(signal: np.ndarray, strength: float = 0.85) -> np.ndarray:
 def _kick(sr: int, dur: float = 0.25) -> np.ndarray:
     n = int(sr * dur)
     t = np.linspace(0, dur, n, endpoint=False)
-    freq = np.linspace(150, 45, n)              # pitch drop = thump
+    freq = np.linspace(150, 45, n)
     wave_ = np.sin(2 * np.pi * np.cumsum(freq) / sr)
     return wave_ * np.exp(-t * 18) * 0.9
 
@@ -251,7 +246,6 @@ def _hat(sr: int, dur: float = 0.06) -> np.ndarray:
 
 
 def _vinyl_crackle(n: int, amount: float = 0.02) -> np.ndarray:
-    """Sparse little pops — the lofi 'dusty record' texture."""
     crackle = np.zeros(n)
     pops = np.random.choice(n, size=n // 800, replace=False)
     crackle[pops] = np.random.uniform(-1, 1, len(pops))
@@ -259,7 +253,6 @@ def _vinyl_crackle(n: int, amount: float = 0.02) -> np.ndarray:
 
 
 def _mix(base: np.ndarray, addition: np.ndarray, at_sample: int) -> None:
-    """Add a short sound into a longer buffer in place, clipping at edges."""
     end = min(at_sample + len(addition), len(base))
     seg = end - at_sample
     if seg > 0:
@@ -268,16 +261,6 @@ def _mix(base: np.ndarray, addition: np.ndarray, at_sample: int) -> None:
 
 def generate_lofi_beat(duration: float, path: str, mood: str = "chill",
                         sr: int = BEAT_SAMPLE_RATE) -> str:
-    """
-    Build a simple lofi loop entirely with numpy math — sine-wave
-    chords + drum hits synthesized from scratch, then lowpass-filtered
-    and vinyl-crackled for that dusty bedroom-producer vibe.
-    No internet, no audio files, no API keys. Just rocks and sticks.
-
-    `mood` picks the tempo/chords/drum intensity — one of "chill",
-    "dramatic", "upbeat" (see MOOD_PRESETS). Falls back to "chill"
-    if an unknown mood is passed.
-    """
     preset = MOOD_PRESETS.get(mood, MOOD_PRESETS["chill"])
     bpm = preset["bpm"]
 
@@ -294,33 +277,27 @@ def generate_lofi_beat(duration: float, path: str, mood: str = "chill",
         chord = chord_progression[bar % len(chord_progression)]
         start_sample = int(bar * bar_dur * sr)
 
-        # Warm sustained chord pad
         for semis in chord:
             freq = _note_freq(semis)
             tone = _sine(freq, bar_dur, sr, amp=0.10)
             tone *= _envelope(len(tone), attack=0.05, release=0.6)
             _mix(mix, tone, start_sample)
 
-        # Drum pattern across the 4 beats of this bar (kick/snare/hats)
         for beat in range(4):
             beat_sample = start_sample + int(beat * beat_dur * sr)
             if beat in (0, 2):
                 _mix(mix, _kick(sr) * preset["kick_amp"], beat_sample)
             if beat in (1, 3):
                 _mix(mix, _snare(sr) * preset["snare_amp"], beat_sample)
-            # lazy lofi hats on the off-beats
             _mix(mix, _hat(sr), beat_sample + int(beat_dur * sr * 0.5))
 
-    # Trim/pad to exact duration
     if len(mix) < n_samples:
         mix = np.pad(mix, (0, n_samples - len(mix)))
     mix = mix[:n_samples]
 
-    # Lofi warmth: lowpass filter + dusty vinyl crackle
     mix = _lowpass(mix, strength=0.6)
     mix += _vinyl_crackle(n_samples, amount=0.015)
 
-    # Normalize and convert to 16-bit PCM
     peak = np.max(np.abs(mix)) or 1.0
     mix = (mix / peak) * 0.85
     pcm = (mix * 32767).astype(np.int16)
@@ -335,11 +312,6 @@ def generate_lofi_beat(duration: float, path: str, mood: str = "chill",
 
 
 def setup_music(duration: float = 60.0, mood: str = "chill") -> bool:
-    """
-    Generate the background beat in pure Python — guaranteed to work,
-    no download, no flaky third-party server to beg for fire.
-    `mood` should be one of "chill", "dramatic", "upbeat" (see MOOD_PRESETS).
-    """
     try:
         print(f"  🎵 UGH! Smashing rocks together to make beat (mood: {mood})…")
         generate_lofi_beat(duration, MUSIC_PATH, mood=mood)
@@ -351,7 +323,7 @@ def setup_music(duration: float = 60.0, mood: str = "chill") -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# RSS FETCH  (identical logic to carousel version)
+# RSS FETCH
 # ─────────────────────────────────────────────────────────────────────────────
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; PHNewsBot/1.0)"}
 
@@ -363,8 +335,6 @@ def _looks_like_image(url: str) -> bool:
     return bool(re.search(r'\.(jpg|jpeg|png|webp)(\?.*)?$', url, re.IGNORECASE))
 
 
-# Patterns that indicate a site logo / icon rather than an article photo.
-# Me not want logo — me want REAL photo!
 _LOGO_SKIP_PATTERNS = re.compile(
     r'(logo|favicon|icon|sprite|brand|header|badge|avatar|watermark)',
     re.IGNORECASE
@@ -372,16 +342,10 @@ _LOGO_SKIP_PATTERNS = re.compile(
 
 
 def _is_article_image(url: str) -> bool:
-    """Return True only if URL looks like a real article photo (not a logo)."""
     return _looks_like_image(url) and not _LOGO_SKIP_PATTERNS.search(url)
 
 
 def scrape_og_image(article_url: str) -> str:
-    """
-    Scrape the article page for its og:image meta tag.
-    Used as fallback when RSS gives no per-item image (e.g. Al Jazeera).
-    Returns the image URL string or "" on failure.
-    """
     if not article_url:
         return ""
     try:
@@ -390,13 +354,11 @@ def scrape_og_image(article_url: str) -> str:
             allow_redirects=True
         )
         r.raise_for_status()
-        # Fast regex — no need for full HTML parser
         m = re.search(
             r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
             r.text, re.IGNORECASE
         )
         if not m:
-            # Try reversed attribute order: content before property
             m = re.search(
                 r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']',
                 r.text, re.IGNORECASE
@@ -412,7 +374,6 @@ def scrape_og_image(article_url: str) -> str:
 
 
 def extract_image_from_item(item, raw_xml_text: str = "") -> str:
-    # 1. media:content / media:thumbnail (most feeds)
     for tag in [
         "{http://search.yahoo.com/mrss/}content",
         "{http://search.yahoo.com/mrss/}thumbnail",
@@ -424,7 +385,6 @@ def extract_image_from_item(item, raw_xml_text: str = "") -> str:
             if url and _is_article_image(url):
                 return url
 
-    # 2. <enclosure>
     enc = item.find("enclosure")
     if enc is not None:
         url = enc.get("url", "")
@@ -432,7 +392,6 @@ def extract_image_from_item(item, raw_xml_text: str = "") -> str:
         if url and ("image" in t or _is_article_image(url)):
             return url
 
-    # 3. <img> tag inside description HTML
     desc_raw = item.findtext("description", "") or ""
     m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', desc_raw, re.IGNORECASE)
     if m:
@@ -440,10 +399,6 @@ def extract_image_from_item(item, raw_xml_text: str = "") -> str:
         if _is_article_image(url):
             return url
 
-    # 4. Last-resort: scan raw XML of THIS ITEM ONLY for image URLs.
-    #    UGH! Old code scanned the WHOLE feed XML — that is how it found
-    #    the channel logo and used it for every Al Jazeera article!
-    #    Now me only scan the XML fragment for this specific item.
     try:
         item_xml = ET.tostring(item, encoding="unicode")
     except Exception:
@@ -457,7 +412,7 @@ def extract_image_from_item(item, raw_xml_text: str = "") -> str:
             if "1x1" not in url and "pixel" not in url.lower() and _is_article_image(url):
                 return url
 
-    return ""  # Caller will try og:image scraping as final fallback
+    return ""
 
 
 def fetch_articles() -> list[dict]:
@@ -474,9 +429,6 @@ def fetch_articles() -> list[dict]:
                 link      = (item.findtext("link") or "").strip()
                 image_url = extract_image_from_item(item, raw_text)
                 if title and link and len(title) > 10:
-                    # If RSS gave no image (common with Al Jazeera, NPR, etc.),
-                    # scrape the article page for its og:image — usually a
-                    # high-quality editorial photo!
                     if not image_url:
                         image_url = scrape_og_image(link)
                     articles.append({
@@ -493,10 +445,8 @@ def fetch_articles() -> list[dict]:
 
 def fetch_article_image(image_url: str):
     """
-    Download article photo at NATIVE resolution — no upscale!
-    UGH! Old code force-resize small web image to 1080×1920 — THAT
-    is where pixelation came from! Keep native size, sharpen once,
-    let downstream code do ONE targeted resize.
+    Download article photo at NATIVE resolution — no upscale, no sharpening!
+    Sharpening is now done ONCE after the final resize in create_slide.
     """
     if not image_url:
         return None
@@ -507,8 +457,6 @@ def fetch_article_image(image_url: str):
         img = Image.open(BytesIO(r.content)).convert("RGB")
         w, h = img.size
         print(f"  ✅ Article image loaded at native size: {w}×{h}")
-        # Sharpen at native res — detail preserved before any later resize
-        img = img.filter(ImageFilter.UnsharpMask(radius=1.5, percent=120, threshold=2))
         return img
     except Exception as e:
         print(f"  ⚠️  Could not fetch article image: {e}")
@@ -594,7 +542,6 @@ def generate_slides(article: dict) -> list[str]:
         print("  🤖 Generating content with Groq (Llama 3)…")
         texts = generate_slides_groq(article)
         if texts and len(texts) >= 6:
-            # pad to 8 if Groq returned fewer
             while len(texts) < 8:
                 texts.append(f"Follow {PAGE_NAME} for more news like this! 🔥")
             return texts[:8]
@@ -642,12 +589,6 @@ def fit_text(draw, text: str, font_size: int, max_w: int, max_lines: int, bold=T
 
 
 def make_bg(photo, accent: tuple, blur: int = 10, darkness: float = 0.55):
-    """
-    Return 1080×1920 background — always starts dark.
-    Photo is NOT used as background here anymore; clear photo is
-    pasted directly in create_slide for content slides (no blur!).
-    UGH! OLD WAY BLUR EVERYTHING. NEW WAY: DARK BG, SHARP PHOTO ON TOP.
-    """
     bg   = Image.new("RGB", (IMG_W, IMG_H), BG_DARK)
     draw = ImageDraw.Draw(bg)
     for y in range(IMG_H):
@@ -657,6 +598,28 @@ def make_bg(photo, accent: tuple, blur: int = 10, darkness: float = 0.55):
         b_c   = min(255, BG_DARK[2] + accent[2] * alpha // 255)
         draw.line([(0, y), (IMG_W, y)], fill=(r_c, g_c, b_c))
     return bg
+
+
+def fit_photo_sharp(img: Image.Image, target_w: int, target_h: int = None,
+                     centering_y: float = 0.2) -> tuple:
+    """
+    Scale photo to fill target_w WIDTH — avoids aggressive upscaling.
+    If target_h is given and photo is taller, crops excess height.
+    Returns (photo, actual_height).
+    """
+    src_w, src_h = img.size
+    scale = target_w / src_w
+    new_w = target_w
+    new_h = int(src_h * scale)
+    photo = img.resize((new_w, new_h), Image.LANCZOS)
+
+    if target_h and new_h > target_h:
+        crop_y = int((new_h - target_h) * centering_y)
+        crop_y = max(0, min(crop_y, new_h - target_h))
+        photo = photo.crop((0, crop_y, new_w, crop_y + target_h))
+        new_h = target_h
+
+    return photo, new_h
 
 
 def create_slide(text: str, idx: int, total: int, category: str,
@@ -672,7 +635,7 @@ def create_slide(text: str, idx: int, total: int, category: str,
 
     bg   = make_bg(article_photo if use_photo else None, accent,
                    blur=10 if is_hook else 14,
-                   darkness=0.45 if is_hook else 0.50)   # lighter blur-bg for content slides
+                   darkness=0.45 if is_hook else 0.50)
     img  = bg.copy()
     draw = ImageDraw.Draw(img)
 
@@ -681,7 +644,7 @@ def create_slide(text: str, idx: int, total: int, category: str,
 
     # ── Category pill (top-left)
     pill_font = get_font(34)
-    pill_text = category   # no emoji — Poppins font no have emoji glyphs, would show broken box
+    pill_text = category
     pill_bbox = draw.textbbox((0, 0), pill_text, font=pill_font)
     pw = pill_bbox[2] + 44
     ph = 58
@@ -694,36 +657,46 @@ def create_slide(text: str, idx: int, total: int, category: str,
     draw.text((IMG_W - 64, 58), f"{idx+1}/{total}",
               font=ctr_font, anchor="rm", fill=C_GRAY)
 
-    # ── HOOK SLIDE  (Content Planet style: sharp photo top, dark fade, bold text bottom)
+    # ── HOOK SLIDE — photo fills width (sharp), text at TRUE CENTER
     if is_hook:
         if article_photo:
-            # ── Sharp photo fills top ~60% of canvas — NO blur, NO darken yet
-            photo_h = int(IMG_H * 0.62)   # ~1190px
-            photo_strip = ImageOps.fit(
-                article_photo,
-                (IMG_W, photo_h),
-                method=Image.LANCZOS,
-                centering=(0.5, 0.25)   # bias toward upper subject area
+            # Photo fills full canvas WIDTH — downscale only (no pixelation!)
+            photo, photo_h = fit_photo_sharp(
+                article_photo, IMG_W, target_h=IMG_H, centering_y=0.25
             )
-            # One sharpening pass after resize — recovers detail
-            photo_strip = photo_strip.filter(
-                ImageFilter.UnsharpMask(radius=1.5, percent=160, threshold=2)
+            # Single sharpening pass AFTER resize — recovers detail cleanly
+            photo = photo.filter(
+                ImageFilter.UnsharpMask(radius=1.2, percent=130, threshold=3)
             )
-            img.paste(photo_strip, (0, 0))
+            img.paste(photo, (0, 0))
 
-            # Deep gradient fade: photo → pure dark over bottom 45% of photo
-            fade_h = int(photo_h * 0.55)
-            fade_start = photo_h - fade_h
-            grad = Image.new("RGBA", (IMG_W, fade_h), (0, 0, 0, 0))
-            grad_d = ImageDraw.Draw(grad)
-            for _gy in range(fade_h):
-                _a = int((_gy / fade_h) ** 1.6 * 255)
-                grad_d.line([(0, _gy), (IMG_W, _gy)], fill=(BG_DARK[0], BG_DARK[1], BG_DARK[2], _a))
+            # If photo is shorter than canvas, gradient fade to dark bg
+            if photo_h < IMG_H:
+                fade_start = max(0, photo_h - 150)
+                fade_h = min(500, IMG_H - fade_start)
+                grad = Image.new("RGBA", (IMG_W, fade_h), (0, 0, 0, 0))
+                gd = ImageDraw.Draw(grad)
+                for y in range(fade_h):
+                    a = int((y / fade_h) ** 1.6 * 255)
+                    gd.line([(0, y), (IMG_W, y)],
+                            fill=(BG_DARK[0], BG_DARK[1], BG_DARK[2], a))
+                img_rgba = img.convert("RGBA")
+                img_rgba.alpha_composite(grad, (0, fade_start))
+                img = img_rgba.convert("RGB")
+
+            # Center-darkening scrim — darkest at center (where text sits),
+            # lighter at top/bottom so photo stays visible
+            overlay = Image.new("RGBA", (IMG_W, IMG_H), (0, 0, 0, 0))
+            od = ImageDraw.Draw(overlay)
+            center_y = IMG_H // 2
+            for y in range(IMG_H):
+                dist = abs(y - center_y) / center_y  # 0 at center, 1 at edges
+                alpha = int(195 - 130 * dist)  # ~195 center, ~65 edges
+                od.line([(0, y), (IMG_W, y)], fill=(0, 0, 0, alpha))
             img_rgba = img.convert("RGBA")
-            img_rgba.alpha_composite(grad, (0, fade_start))
+            img_rgba.alpha_composite(overlay)
             img = img_rgba.convert("RGB")
         else:
-            # No photo — subtle dark gradient
             overlay  = Image.new("RGBA", (IMG_W, IMG_H), (0, 0, 0, 140))
             img_rgba = img.convert("RGBA")
             img_rgba.alpha_composite(overlay)
@@ -731,19 +704,17 @@ def create_slide(text: str, idx: int, total: int, category: str,
 
         draw = ImageDraw.Draw(img)
 
-        # Reapply pill on top
+        # Reapply pill + counter on top of everything
         draw_rounded_rect(draw, px, py, px + pw, py + ph, 12, accent)
         draw.text((px + 22, py + 12), pill_text, font=pill_font, fill=C_WHITE)
         draw.text((IMG_W - 64, 58), f"{idx+1}/{total}",
                   font=ctr_font, anchor="rm", fill=C_GRAY)
 
-        # ── Headline block in bottom ~38% (like Content Planet)
-        text_zone_top = int(IMG_H * 0.58)
-        text_zone_bot = IMG_H - 120
+        # ── Headline — TRUE CENTER of canvas (center center)
         pad = 64
         max_w = IMG_W - pad * 2
 
-        # Split headline: first ~half words in ACCENT color, rest in WHITE
+        # Split headline: first ~half words in ACCENT, rest in WHITE
         words = text.split()
         mid   = max(1, len(words) // 2)
         line1_text = " ".join(words[:mid])
@@ -753,7 +724,6 @@ def create_slide(text: str, idx: int, total: int, category: str,
         fs = font_h.size
         lh = fs + 22
 
-        # Draw two-tone headline (accent first chunk, white second chunk)
         all_lines = []
         for chunk, colour in [(line1_text, accent), (line2_text, C_WHITE)]:
             if not chunk.strip():
@@ -761,17 +731,18 @@ def create_slide(text: str, idx: int, total: int, category: str,
             _, chunk_lines = fit_text(draw, chunk.upper(), fs, max_w, 3)
             all_lines.extend([(l, colour) for l in chunk_lines])
 
+        # ── CENTER CENTER: vertically centered at IMG_H // 2
         total_text_h = len(all_lines) * lh
-        y = text_zone_top + max(0, (text_zone_bot - text_zone_top - total_text_h) // 2)
+        y = IMG_H // 2 - total_text_h // 2
+
         for line_txt, line_col in all_lines:
             bx = draw.textbbox((0, 0), line_txt, font=font_h)[2]
             x  = (IMG_W - bx) // 2
-            # Strong shadow for readability
-            draw_text_shadow(draw, (x, y), line_txt, font_h, line_col, shadow_offset=5,
-                             shadow_color=(0, 0, 0, 210))
+            draw_text_shadow(draw, (x, y), line_txt, font_h, line_col,
+                             shadow_offset=5, shadow_color=(0, 0, 0, 220))
             y += lh
 
-        # Thin accent divider line
+        # Thin accent divider line below text
         draw.rectangle([(IMG_W//2 - 100, y + 18), (IMG_W//2 + 100, y + 25)], fill=accent)
 
         # "SWIPE UP" nudge at very bottom
@@ -781,17 +752,14 @@ def create_slide(text: str, idx: int, total: int, category: str,
 
     # ── CTA SLIDE
     elif is_cta:
-        # Dark overlay for CTA
         overlay  = Image.new("RGBA", (IMG_W, IMG_H), (0, 0, 0, 120))
         img_rgba = img.convert("RGBA")
         img_rgba.alpha_composite(overlay)
         img  = img_rgba.convert("RGB")
         draw = ImageDraw.Draw(img)
 
-        # Centred CTA block — pushed slightly above centre on tall canvas
         centre_y = IMG_H // 2 - 60
 
-        # Decorative starburst instead of broken emoji
         import math as _math
         star_cx, star_cy = IMG_W // 2, centre_y - 130
         for _angle in range(0, 360, 20):
@@ -817,7 +785,6 @@ def create_slide(text: str, idx: int, total: int, category: str,
         draw.text((IMG_W // 2, centre_y + 460), "Follow now — it is free!",
                   font=get_font(34, bold=False), anchor="mm", fill=C_GRAY)
 
-        # DM-share nudge
         draw.text((IMG_W // 2, IMG_H - 130),
                   "Share this with a friend!",
                   font=get_font(32, bold=False), anchor="mm", fill=C_GRAY)
@@ -827,29 +794,22 @@ def create_slide(text: str, idx: int, total: int, category: str,
         label = SLIDE_LABELS[idx] if idx < len(SLIDE_LABELS) else ""
 
         if use_photo:
-            # ── CONTENT SLIDE: sharp photo top ~55%, dark fade + text card bottom ~45%
-            # UGH! Photo must be CRISP — no blur! Blur is enemy of tribe!
+            # ── CONTENT SLIDE: sharp photo fills width, NO forced upscaling
+            photo_zone_h = int(IMG_H * 0.55)
 
-            photo_zone_h   = int(IMG_H * 0.55)   # ~1056px of crisp photo
-            photo_zone_top = 0
-            photo_zone_bot = photo_zone_h
-
-            # Crop-to-fill from native res in ONE step — LANCZOS = sharpest
-            photo_strip = ImageOps.fit(
-                article_photo,
-                (IMG_W, photo_zone_h),
-                method=Image.LANCZOS,
-                centering=(0.5, 0.2)   # bias toward upper portion (faces)
+            # Fill WIDTH only — downscale (sharp), height is natural
+            photo, actual_h = fit_photo_sharp(
+                article_photo, IMG_W, target_h=photo_zone_h, centering_y=0.2
             )
-            # Post-resize sharpening — recover detail lost in downscale
-            photo_strip = photo_strip.filter(
-                ImageFilter.UnsharpMask(radius=1.5, percent=160, threshold=2)
+            # Single sharpening pass after resize
+            photo = photo.filter(
+                ImageFilter.UnsharpMask(radius=1.2, percent=140, threshold=3)
             )
-            img.paste(photo_strip, (0, photo_zone_top))
+            img.paste(photo, (0, 0))
 
-            # Gradient fade: photo → BG_DARK over bottom 40% of photo zone
-            fade_h = int(photo_zone_h * 0.48)
-            fade_start = photo_zone_bot - fade_h
+            # Gradient fade: photo → BG_DARK
+            fade_start = max(0, min(actual_h, photo_zone_h) - 200)
+            fade_h = min(400, IMG_H - fade_start)
             grad = Image.new("RGBA", (IMG_W, fade_h), (0, 0, 0, 0))
             grad_d = ImageDraw.Draw(grad)
             for _gy in range(fade_h):
@@ -861,11 +821,10 @@ def create_slide(text: str, idx: int, total: int, category: str,
             img = img_rgba.convert("RGB")
             draw = ImageDraw.Draw(img)
 
-            # Text zone: just below photo fade-out
-            content_top = photo_zone_bot + 30
+            # Text zone: below photo area
+            content_top = photo_zone_h + 30
             content_bot = IMG_H - 110
         else:
-            # No photo — full dark background, text fills the canvas
             content_top = 280 if label else 200
             content_bot = IMG_H - 180
 
@@ -875,7 +834,6 @@ def create_slide(text: str, idx: int, total: int, category: str,
         draw.text((IMG_W - 64, 58), f"{idx+1}/{total}",
                   font=ctr_font, anchor="rm", fill=C_GRAY)
 
-        # Label — placed differently depending on whether photo is shown
         if label:
             lbl_font = get_font(40)
             lbl_bbox = draw.textbbox((0, 0), label, font=lbl_font)
@@ -887,7 +845,6 @@ def create_slide(text: str, idx: int, total: int, category: str,
                              (lbl_x + lbl_w, lbl_y + lbl_bbox[3] + 14)], fill=accent)
 
         # Body text — centred vertically in the available text zone
-        # Style: first word-chunk in ACCENT (bold color), rest in WHITE — like Content Planet
         pad   = 72
         max_w = IMG_W - pad * 2
         font, lines = fit_text(draw, text, 76, max_w, 8)
@@ -896,14 +853,12 @@ def create_slide(text: str, idx: int, total: int, category: str,
         th    = len(lines) * lh
         ty    = content_top + max(0, (content_bot - content_top - th) // 2)
 
-        # Two-tone colouring: accent for first line, white for the rest
         for i, line in enumerate(lines):
             colour = accent if i == 0 else C_WHITE
             draw_text_shadow(draw, (pad, ty), line, font, colour,
                              shadow_offset=4, shadow_color=(0, 0, 0, 200))
             ty += lh
 
-        # Accent left border — visual anchor
         bar_top    = content_top + max(0, (content_bot - content_top - th) // 2) - 10
         bar_bottom = bar_top + th + 16
         draw.rectangle([(36, bar_top), (46, bar_bottom)], fill=accent)
@@ -923,10 +878,6 @@ def create_slide(text: str, idx: int, total: int, category: str,
 # ─────────────────────────────────────────────────────────────────────────────
 def make_ken_burns_clip(pil_img: Image.Image, duration: float,
                         zoom_in: bool = True, fps: int = FPS):
-    """
-    Convert a PIL image into a moviepy clip with a slow Ken Burns zoom.
-    Alternates between zoom-in and zoom-out for visual variety.
-    """
     img_array = np.array(pil_img)
     h, w      = img_array.shape[:2]
     zoom_start = 1.0
@@ -939,15 +890,12 @@ def make_ken_burns_clip(pil_img: Image.Image, duration: float,
         progress = t / duration
         scale    = zoom_start + (zoom_end - zoom_start) * progress
 
-        # Compute cropped region size
         crop_w = int(w / scale)
         crop_h = int(h / scale)
 
-        # Pan: drift slightly from centre for parallax feel
         offset_x = int((w - crop_w) * 0.5)
         offset_y = int((h - crop_h) * 0.5)
 
-        # Slightly shift the anchor based on zoom direction
         if zoom_in:
             offset_x += int((w - crop_w) * 0.1 * progress)
         else:
@@ -957,7 +905,6 @@ def make_ken_burns_clip(pil_img: Image.Image, duration: float,
         offset_y = max(0, min(offset_y, h - crop_h))
 
         cropped = img_array[offset_y:offset_y + crop_h, offset_x:offset_x + crop_w]
-        # Resize back to original dimensions using PIL for quality
         cropped_pil = Image.fromarray(cropped).resize((w, h), Image.LANCZOS)
         return np.array(cropped_pil)
 
@@ -968,40 +915,29 @@ def make_ken_burns_clip(pil_img: Image.Image, duration: float,
 # VIDEO ASSEMBLY
 # ─────────────────────────────────────────────────────────────────────────────
 def build_reel(images: list, output_path: str, has_music: bool) -> str:
-    """
-    Stitch PIL images into a vertical MP4 Reel with:
-    - Ken Burns zoom per slide
-    - Crossfade transitions
-    - Optional background music
-    Returns path to the output MP4.
-    """
     print(f"\n🎬 Assembling {len(images)} slides into video…")
 
     clips = []
     for i, pil_img in enumerate(images):
-        zoom_in = (i % 2 == 0)   # alternate zoom direction each slide
+        zoom_in = (i % 2 == 0)
         clip    = make_ken_burns_clip(pil_img, SLIDE_DURATION, zoom_in=zoom_in)
         clip    = clip.set_fps(FPS)
 
-        # Crossfade: fade out at end of each clip
         if i > 0:
             clip = clip.crossfadein(FADE_DURATION)
 
         clips.append(clip)
         print(f"   Slide {i+1}/{len(images)} animated ✓")
 
-    # Concatenate with crossfade padding
     video = concatenate_videoclips(clips, method="compose",
                                    padding=-FADE_DURATION)
 
-    # ── Background music
     if has_music and os.path.exists(MUSIC_PATH):
         try:
             print("  🎵 Mixing background music…")
             audio       = AudioFileClip(MUSIC_PATH)
             total_dur   = video.duration
 
-            # Loop or trim music to match video length
             if audio.duration < total_dur:
                 loops_needed = math.ceil(total_dur / audio.duration)
                 from moviepy.editor import concatenate_audioclips
@@ -1014,7 +950,6 @@ def build_reel(images: list, output_path: str, has_music: bool) -> str:
         except Exception as e:
             print(f"  ⚠️  Music mix failed: {e} — continuing without audio.")
 
-    # ── Render
     print(f"\n🎞️  Rendering MP4 → {output_path}  (this takes ~30-60 seconds)…")
     video.write_videofile(
         output_path,
@@ -1023,7 +958,7 @@ def build_reel(images: list, output_path: str, has_music: bool) -> str:
         audio_codec="aac",
         preset="fast",
         ffmpeg_params=["-crf", "23", "-pix_fmt", "yuv420p"],
-        logger=None,   # suppress verbose moviepy output
+        logger=None,
     )
     print(f"  ✅ Video rendered! Size: {os.path.getsize(output_path) / 1024 / 1024:.1f} MB")
     return output_path
@@ -1031,12 +966,8 @@ def build_reel(images: list, output_path: str, has_music: bool) -> str:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # VIDEO UPLOAD (throwaway GitHub Release asset — public direct-download URL)
-# We upload to a temporary file host that returns a public URL for the IG API.
-# Strategy: create a release, attach the MP4 as an asset, grab its
-# browser_download_url, then delete the release once IG has the video.
 # ─────────────────────────────────────────────────────────────────────────────
 def create_github_release(tag: str, repo: str, token: str) -> dict:
-    """Create a new (non-draft) GitHub release to attach the video asset to."""
     r = requests.post(
         f"https://api.github.com/repos/{repo}/releases",
         headers={
@@ -1059,8 +990,6 @@ def create_github_release(tag: str, repo: str, token: str) -> dict:
 
 
 def upload_asset_to_release(upload_url: str, video_path: str, token: str) -> str:
-    """Upload the MP4 as a release asset. Returns the public browser_download_url."""
-    # upload_url comes back like ".../assets{?name,label}" — strip the template part
     upload_url = upload_url.split("{")[0]
     filename = os.path.basename(video_path)
 
@@ -1085,7 +1014,6 @@ def upload_asset_to_release(upload_url: str, video_path: str, token: str) -> str
 
 
 def delete_github_release(release_id: int, repo: str, token: str) -> None:
-    """Best-effort cleanup — delete the release after IG has fetched the video."""
     try:
         requests.delete(
             f"https://api.github.com/repos/{repo}/releases/{release_id}",
@@ -1097,17 +1025,6 @@ def delete_github_release(release_id: int, repo: str, token: str) -> None:
 
 
 def upload_video_to_github_release(video_path: str) -> tuple:
-    """
-    Upload the MP4 as an asset on a throwaway GitHub Release in this repo.
-    Returns (public_url, release_id) — release_id lets the caller clean up
-    after Facebook has finished pulling the video.
-
-    Requires:
-      GITHUB_TOKEN       — auto-provided by Actions (needs 'contents: write' permission)
-      GITHUB_REPOSITORY  — auto-provided by Actions, e.g. "owner/repo"
-    NOTE: the repo must be PUBLIC — Facebook's servers fetch the asset URL
-    without any auth header, and private-repo release assets require auth to download.
-    """
     repo  = os.environ["GITHUB_REPOSITORY"]
     token = GH_RELEASE_TOKEN
     if not token:
@@ -1128,11 +1045,6 @@ def upload_video_to_github_release(video_path: str) -> tuple:
 # ─────────────────────────────────────────────────────────────────────────────
 # FACEBOOK GRAPH API — PAGE VIDEO POSTING
 # ─────────────────────────────────────────────────────────────────────────────
-# Facebook's Page Video endpoint is simpler than Instagram's: one POST with
-# file_url uploads AND publishes in a single call — no separate container
-# + publish step. Facebook still processes the video async behind the
-# scenes, so we poll /{video_id}?fields=status until it's done.
-
 def fb_post(path: str, **params) -> dict:
     r = requests.post(
         f"{FB_BASE}/{path}",
@@ -1156,10 +1068,6 @@ def fb_get(path: str, **params) -> dict:
 
 
 def upload_video_to_page(video_url: str, description: str) -> str:
-    """
-    Upload (and publish) a video to the Facebook Page in one call.
-    Returns the video ID.
-    """
     data = fb_post(
         f"{FB_PAGE_ID}/videos",
         file_url=video_url,
@@ -1169,7 +1077,6 @@ def upload_video_to_page(video_url: str, description: str) -> str:
 
 
 def wait_for_video_ready(video_id: str, retries: int = 24, interval: int = 10):
-    """Poll until Facebook finishes processing the uploaded video."""
     for attempt in range(retries):
         status = fb_get(video_id, fields="status").get("status", {})
         video_status = status.get("video_status", "unknown")
@@ -1179,8 +1086,6 @@ def wait_for_video_ready(video_id: str, retries: int = 24, interval: int = 10):
         if video_status == "error":
             raise RuntimeError(f"Video {video_id} errored during processing.")
         time.sleep(interval)
-    # Not fatal — Facebook sometimes finishes processing slightly after
-    # the polling window without ever reporting "ready" cleanly.
     print("    ⚠️  Didn't confirm 'ready' status in time — continuing anyway.")
 
 
@@ -1219,17 +1124,14 @@ def main():
     print("  🎬 World News Facebook REEL Bot — Animated Video Edition")
     print("=" * 60)
 
-    # ── Check moviepy
     if not MOVIEPY_OK:
         print("❌ moviepy is not installed!")
         print("   Run: pip install moviepy numpy")
         sys.exit(1)
 
-    # ── Fonts
     print("\n📦 Setting up fonts…")
     setup_fonts()
 
-    # ── Fetch articles
     print("\n📰 Fetching articles from RSS feeds…")
     articles = fetch_articles()
     if not articles:
@@ -1237,7 +1139,6 @@ def main():
         sys.exit(1)
     print(f"   Found {len(articles)} articles across all feeds.")
 
-    # ── Pick one (prefer articles with images)
     articles_with_img    = [a for a in articles if a.get("image_url")]
     articles_without_img = [a for a in articles if not a.get("image_url")]
     if articles_with_img:
@@ -1253,25 +1154,21 @@ def main():
     print(f"   Link      : {article['link']}")
     print(f"   Image URL : {article.get('image_url', 'none')[:80] or 'none'}")
 
-    # ── Music — generated now, matched to this article's category mood
     mood = CATEGORY_MOOD.get(article["category"], "chill")
     print(f"\n🎵 Setting up background beat (category {article['category']} → mood '{mood}')…")
     est_duration = len(SLIDE_LABELS) * SLIDE_DURATION + 2.0
     has_music = setup_music(duration=est_duration, mood=mood)
 
-    # ── Download article image (vertical crop)
     print("\n📷 Fetching article photo…")
     article_photo = fetch_article_image(article.get("image_url", ""))
     if not article_photo:
         print("   ℹ️  No article photo — slides use the dark branded background.")
 
-    # ── Generate slide texts (8 slides)
     print("\n✍️  Generating slide content…")
     slide_texts = generate_slides(article)
     for i, t in enumerate(slide_texts):
         print(f"   Slide {i+1}: {t[:60]}…")
 
-    # ── Create slide images (1080×1920)
     print("\n🎨 Creating slide images (1080×1920)…")
     images = []
     for i, text in enumerate(slide_texts):
@@ -1280,30 +1177,24 @@ def main():
         images.append(img)
         print(f"   Slide {i+1}/{len(slide_texts)} ✓")
 
-    # ── Build animated video
     output_path = "/tmp/world_news_reel.mp4"
     build_reel(images, output_path, has_music)
 
-    # ── Upload video to a throwaway GitHub Release
     print("\n☁️  Uploading video…")
     video_url, release_id = upload_video_to_github_release(output_path)
 
-    # ── Build caption
     caption = build_caption(article)
 
-    # ── Upload (and publish) the video to the Facebook Page in one call
     print("\n📱 Uploading video to Facebook Page…")
     video_id = upload_video_to_page(video_url, caption)
     print(f"   Video ID: {video_id}")
 
-    # ── Wait for Facebook to finish processing the video
     print("\n⏳ Waiting for video to process (takes ~1-3 min)…")
     wait_for_video_ready(video_id, retries=24, interval=10)
 
     print(f"\n✅ SUCCESS! Posted to Facebook Page. Video ID: {video_id}")
     post_id = video_id
 
-    # ── Post comments
     time.sleep(5)
     print("\n💬 Posting comments…")
     try:
@@ -1323,7 +1214,6 @@ def main():
     print("\n🔥 Done! Automation complete. 🌍")
     print("=" * 60)
 
-    # ── Clean up the throwaway release/asset now that IG has the video
     print("\n🧹 Cleaning up temporary GitHub release…")
     delete_github_release(release_id, os.environ["GITHUB_REPOSITORY"], GH_RELEASE_TOKEN)
 
