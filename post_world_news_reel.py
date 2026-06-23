@@ -424,7 +424,12 @@ def fetch_articles() -> list[dict]:
 
 
 def fetch_article_image(image_url: str):
-    """Download article photo as 1080×1920 PIL image (vertical crop)."""
+    """
+    Download article photo at NATIVE resolution — no upscale!
+    UGH! Old code force-resize small web image to 1080×1920 — THAT
+    is where pixelation came from! Me tribe smarter now: keep native
+    size, sharpen once, let downstream code do ONE targeted resize.
+    """
     if not image_url:
         return None
     try:
@@ -432,22 +437,10 @@ def fetch_article_image(image_url: str):
         r = requests.get(image_url, headers=HEADERS, timeout=15)
         r.raise_for_status()
         img = Image.open(BytesIO(r.content)).convert("RGB")
-        # Crop to 9:16 aspect ratio
-        w, h    = img.size
-        target_ratio = IMG_W / IMG_H  # 9/16 = 0.5625
-        current_ratio = w / h
-        if current_ratio > target_ratio:
-            # image is wider than 9:16 — crop sides
-            new_w = int(h * target_ratio)
-            left  = (w - new_w) // 2
-            img   = img.crop((left, 0, left + new_w, h))
-        else:
-            # image is taller — crop top/bottom
-            new_h = int(w / target_ratio)
-            top   = (h - new_h) // 2
-            img   = img.crop((0, top, w, top + new_h))
-        img = img.resize((IMG_W, IMG_H), Image.LANCZOS)
-        print("  ✅ Article image loaded (1080×1920)!")
+        w, h = img.size
+        print(f"  ✅ Article image loaded at native size: {w}×{h}")
+        # Sharpen at native res — detail preserved before any later resize
+        img = img.filter(ImageFilter.UnsharpMask(radius=1.5, percent=120, threshold=2))
         return img
     except Exception as e:
         print(f"  ⚠️  Could not fetch article image: {e}")
@@ -581,9 +574,18 @@ def fit_text(draw, text: str, font_size: int, max_w: int, max_lines: int, bold=T
 
 
 def make_bg(photo, accent: tuple, blur: int = 10, darkness: float = 0.55):
-    """Return 1080×1920 background."""
+    """
+    Return 1080×1920 background.
+    Photo may be at native (small) resolution — we resize to canvas HERE
+    for the blurred background. Blur hides upscaling artifacts, so this
+    is safe. The clear photo strip in content slides does its OWN resize
+    directly from native to avoid double-upscale pixelation.
+    """
     if photo:
         bg = photo.copy()
+        # Resize to canvas only for the blur layer — one targeted resize
+        if bg.size != (IMG_W, IMG_H):
+            bg = ImageOps.fit(bg, (IMG_W, IMG_H), method=Image.LANCZOS, centering=(0.5, 0.3))
         bg = bg.filter(ImageFilter.GaussianBlur(radius=blur))
         enhancer = ImageEnhance.Brightness(bg)
         bg = enhancer.enhance(1 - darkness)
@@ -729,14 +731,19 @@ def create_slide(text: str, idx: int, total: int, category: str,
             photo_zone_h   = 780        # show 780px of clear photo (about 40%)
             photo_zone_bot = photo_zone_top + photo_zone_h   # y=920
 
-            # Use ImageOps.fit for crop-to-fill (like CSS object-fit:cover).
-            # This preserves aspect ratio — no stretch, no pixelation.
+            # Fit directly from native resolution → target strip size in ONE step.
+            # UGH! Old code used pre-upscaled 1080×1920 blob here — blurry!
+            # Now we go native → (IMG_W, photo_zone_h) directly — much sharper!
             # Anchor top-center so faces/subjects stay in frame.
             photo_strip = ImageOps.fit(
                 article_photo,
                 (IMG_W, photo_zone_h),
                 method=Image.LANCZOS,
                 centering=(0.5, 0.0)   # 0.0 = anchor top edge, keeps top of photo
+            )
+            # Sharpen after resize to recover detail lost in upscaling
+            photo_strip = photo_strip.filter(
+                ImageFilter.UnsharpMask(radius=1.2, percent=150, threshold=3)
             )
             img.paste(photo_strip, (0, photo_zone_top))
 
