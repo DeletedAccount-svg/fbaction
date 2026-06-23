@@ -1,14 +1,7 @@
 name: PH News Instagram Carousel (Peso Weekly Style)
 
 on:
-  schedule:
-    - cron: '0 23 * * *'   # 7:00 AM Manila (GMT+8)
-    - cron: '0 1  * * *'   # 9:00 AM Manila
-    - cron: '0 4  * * *'   # 12:00 PM Manila (noon)
-    - cron: '0 7  * * *'   # 3:00 PM Manila
-    - cron: '0 9  * * *'   # 5:00 PM Manila
-    - cron: '0 11 * * *'   # 7:00 PM Manila
-  workflow_dispatch:       # allows manual trigger from GitHub UI
+  workflow_dispatch:       # triggered by cron-job.org
 
 jobs:
   post-carousel:
