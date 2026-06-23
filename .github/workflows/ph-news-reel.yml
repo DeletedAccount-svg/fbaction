@@ -10,6 +10,8 @@ on:
 jobs:
   post-reel:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # needed so GITHUB_TOKEN can create/delete releases
 
     steps:
       - name: Checkout repository
@@ -32,9 +34,9 @@ jobs:
 
       - name: Run PH News Instagram Reel Poster
         env:
-          IG_USER_ID:      ${{ secrets.IG_USER_ID }}
-          FB_ACCESS_TOKEN: ${{ secrets.FB_ACCESS_TOKEN }}
-          IMGBB_API_KEY:   ${{ secrets.IMGBB_API_KEY }}
-          GROQ_API_KEY:    ${{ secrets.GROQ_API_KEY }}
-          PAGE_NAME:       ${{ secrets.PAGE_NAME }}
+          IG_USER_ID:       ${{ secrets.IG_USER_ID }}
+          FB_ACCESS_TOKEN:  ${{ secrets.FB_ACCESS_TOKEN }}
+          GROQ_API_KEY:     ${{ secrets.GROQ_API_KEY }}
+          PAGE_NAME:        ${{ secrets.PAGE_NAME }}
+          GH_RELEASE_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python post_ph_news_reel.py
