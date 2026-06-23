@@ -643,30 +643,20 @@ def fit_text(draw, text: str, font_size: int, max_w: int, max_lines: int, bold=T
 
 def make_bg(photo, accent: tuple, blur: int = 10, darkness: float = 0.55):
     """
-    Return 1080×1920 background.
-    Photo may be at native resolution — we resize to canvas HERE
-    for the blurred background. Blur hides upscaling artifacts, so safe.
+    Return 1080×1920 background — always starts dark.
+    Photo is NOT used as background here anymore; clear photo is
+    pasted directly in create_slide for content slides (no blur!).
+    UGH! OLD WAY BLUR EVERYTHING. NEW WAY: DARK BG, SHARP PHOTO ON TOP.
     """
-    if photo:
-        bg = photo.copy()
-        if bg.size != (IMG_W, IMG_H):
-            bg = ImageOps.fit(bg, (IMG_W, IMG_H), method=Image.LANCZOS, centering=(0.5, 0.3))
-        bg = bg.filter(ImageFilter.GaussianBlur(radius=blur))
-        enhancer = ImageEnhance.Brightness(bg)
-        bg = enhancer.enhance(1 - darkness)
-        tint = Image.new("RGB", (IMG_W, IMG_H), accent)
-        bg   = Image.blend(bg, tint, alpha=0.18)
-        return bg
-    else:
-        bg   = Image.new("RGB", (IMG_W, IMG_H), BG_DARK)
-        draw = ImageDraw.Draw(bg)
-        for y in range(IMG_H):
-            alpha = int(30 * (1 - y / IMG_H))
-            r_c   = min(255, BG_DARK[0] + accent[0] * alpha // 255)
-            g_c   = min(255, BG_DARK[1] + accent[1] * alpha // 255)
-            b_c   = min(255, BG_DARK[2] + accent[2] * alpha // 255)
-            draw.line([(0, y), (IMG_W, y)], fill=(r_c, g_c, b_c))
-        return bg
+    bg   = Image.new("RGB", (IMG_W, IMG_H), BG_DARK)
+    draw = ImageDraw.Draw(bg)
+    for y in range(IMG_H):
+        alpha = int(25 * (1 - y / IMG_H))
+        r_c   = min(255, BG_DARK[0] + accent[0] * alpha // 255)
+        g_c   = min(255, BG_DARK[1] + accent[1] * alpha // 255)
+        b_c   = min(255, BG_DARK[2] + accent[2] * alpha // 255)
+        draw.line([(0, y), (IMG_W, y)], fill=(r_c, g_c, b_c))
+    return bg
 
 
 def create_slide(text: str, idx: int, total: int, category: str,
@@ -704,36 +694,89 @@ def create_slide(text: str, idx: int, total: int, category: str,
     draw.text((IMG_W - 64, 58), f"{idx+1}/{total}",
               font=ctr_font, anchor="rm", fill=C_GRAY)
 
-    # ── HOOK SLIDE
+    # ── HOOK SLIDE  (Content Planet style: sharp photo top, dark fade, bold text bottom)
     if is_hook:
-        overlay  = Image.new("RGBA", (IMG_W, IMG_H), (0, 0, 0, 170))
-        img_rgba = img.convert("RGBA")
-        img_rgba.alpha_composite(overlay)
-        img  = img_rgba.convert("RGB")
+        if article_photo:
+            # ── Sharp photo fills top ~60% of canvas — NO blur, NO darken yet
+            photo_h = int(IMG_H * 0.62)   # ~1190px
+            photo_strip = ImageOps.fit(
+                article_photo,
+                (IMG_W, photo_h),
+                method=Image.LANCZOS,
+                centering=(0.5, 0.25)   # bias toward upper subject area
+            )
+            # One sharpening pass after resize — recovers detail
+            photo_strip = photo_strip.filter(
+                ImageFilter.UnsharpMask(radius=1.5, percent=160, threshold=2)
+            )
+            img.paste(photo_strip, (0, 0))
+
+            # Deep gradient fade: photo → pure dark over bottom 45% of photo
+            fade_h = int(photo_h * 0.55)
+            fade_start = photo_h - fade_h
+            grad = Image.new("RGBA", (IMG_W, fade_h), (0, 0, 0, 0))
+            grad_d = ImageDraw.Draw(grad)
+            for _gy in range(fade_h):
+                _a = int((_gy / fade_h) ** 1.6 * 255)
+                grad_d.line([(0, _gy), (IMG_W, _gy)], fill=(BG_DARK[0], BG_DARK[1], BG_DARK[2], _a))
+            img_rgba = img.convert("RGBA")
+            img_rgba.alpha_composite(grad, (0, fade_start))
+            img = img_rgba.convert("RGB")
+        else:
+            # No photo — subtle dark gradient
+            overlay  = Image.new("RGBA", (IMG_W, IMG_H), (0, 0, 0, 140))
+            img_rgba = img.convert("RGBA")
+            img_rgba.alpha_composite(overlay)
+            img  = img_rgba.convert("RGB")
+
         draw = ImageDraw.Draw(img)
 
-        # Reapply pill on top of overlay
+        # Reapply pill on top
         draw_rounded_rect(draw, px, py, px + pw, py + ph, 12, accent)
         draw.text((px + 22, py + 12), pill_text, font=pill_font, fill=C_WHITE)
         draw.text((IMG_W - 64, 58), f"{idx+1}/{total}",
                   font=ctr_font, anchor="rm", fill=C_GRAY)
 
-        # Big centred headline — vertically centred in the tall canvas
-        font, lines = fit_text(draw, text.upper(), 88, IMG_W - 112, 6)
-        fs   = font.size
-        lh   = fs + 18
-        th   = len(lines) * lh
-        y    = (IMG_H - th) // 2
-        for line in lines:
-            bx = draw.textbbox((0, 0), line, font=font)[2]
-            x  = (IMG_W - bx) // 2
-            draw_text_shadow(draw, (x, y), line, font, C_WHITE, shadow_offset=5)
-            y += lh
-        draw.rectangle([(IMG_W//2 - 90, y + 28), (IMG_W//2 + 90, y + 36)], fill=accent)
+        # ── Headline block in bottom ~38% (like Content Planet)
+        text_zone_top = int(IMG_H * 0.58)
+        text_zone_bot = IMG_H - 120
+        pad = 64
+        max_w = IMG_W - pad * 2
 
-        # "SWIPE UP" nudge at bottom
+        # Split headline: first ~half words in ACCENT color, rest in WHITE
+        words = text.split()
+        mid   = max(1, len(words) // 2)
+        line1_text = " ".join(words[:mid])
+        line2_text = " ".join(words[mid:])
+
+        font_h, _ = fit_text(draw, text, 80, max_w, 6)
+        fs = font_h.size
+        lh = fs + 22
+
+        # Draw two-tone headline (accent first chunk, white second chunk)
+        all_lines = []
+        for chunk, colour in [(line1_text, accent), (line2_text, C_WHITE)]:
+            if not chunk.strip():
+                continue
+            _, chunk_lines = fit_text(draw, chunk.upper(), fs, max_w, 3)
+            all_lines.extend([(l, colour) for l in chunk_lines])
+
+        total_text_h = len(all_lines) * lh
+        y = text_zone_top + max(0, (text_zone_bot - text_zone_top - total_text_h) // 2)
+        for line_txt, line_col in all_lines:
+            bx = draw.textbbox((0, 0), line_txt, font=font_h)[2]
+            x  = (IMG_W - bx) // 2
+            # Strong shadow for readability
+            draw_text_shadow(draw, (x, y), line_txt, font_h, line_col, shadow_offset=5,
+                             shadow_color=(0, 0, 0, 210))
+            y += lh
+
+        # Thin accent divider line
+        draw.rectangle([(IMG_W//2 - 100, y + 18), (IMG_W//2 + 100, y + 25)], fill=accent)
+
+        # "SWIPE UP" nudge at very bottom
         nudge_font = get_font(32, bold=False)
-        draw.text((IMG_W // 2, IMG_H - 130), "SWIPE UP for the full story",
+        draw.text((IMG_W // 2, IMG_H - 60), "SWIPE UP for the full story",
                   font=nudge_font, anchor="mm", fill=C_GRAY)
 
     # ── CTA SLIDE
@@ -784,56 +827,43 @@ def create_slide(text: str, idx: int, total: int, category: str,
         label = SLIDE_LABELS[idx] if idx < len(SLIDE_LABELS) else ""
 
         if use_photo:
-            # ── NEW DESIGN: clear photo on top, dark card + text on bottom ──
-            #
-            # The old design pasted an opaque dark card over the ENTIRE slide,
-            # which buried the photo completely. Now we:
-            #  1. Paste the clear (unblurred) photo in the upper zone
-            #  2. Fade it into a dark card below
-            #  3. Put all text inside the dark card zone
+            # ── CONTENT SLIDE: sharp photo top ~55%, dark fade + text card bottom ~45%
+            # UGH! Photo must be CRISP — no blur! Blur is enemy of tribe!
 
-            photo_zone_top = 140        # starts below pill/counter row
-            photo_zone_h   = 780        # show 780px of clear photo (about 40%)
-            photo_zone_bot = photo_zone_top + photo_zone_h   # y=920
+            photo_zone_h   = int(IMG_H * 0.55)   # ~1056px of crisp photo
+            photo_zone_top = 0
+            photo_zone_bot = photo_zone_h
 
-            # Use ImageOps.fit for crop-to-fill (like CSS object-fit:cover).
-            # Fit directly from native resolution → strip size in ONE step.
-            # Anchor top-center so faces/subjects stay in frame.
+            # Crop-to-fill from native res in ONE step — LANCZOS = sharpest
             photo_strip = ImageOps.fit(
                 article_photo,
                 (IMG_W, photo_zone_h),
                 method=Image.LANCZOS,
-                centering=(0.5, 0.0)   # 0.0 = anchor top edge, keeps top of photo
+                centering=(0.5, 0.2)   # bias toward upper portion (faces)
             )
-            # Sharpen after resize to recover crisp detail
+            # Post-resize sharpening — recover detail lost in downscale
             photo_strip = photo_strip.filter(
-                ImageFilter.UnsharpMask(radius=1.2, percent=150, threshold=3)
+                ImageFilter.UnsharpMask(radius=1.5, percent=160, threshold=2)
             )
             img.paste(photo_strip, (0, photo_zone_top))
 
-            # Smooth gradient fade at photo bottom  →  dark card transition
-            grad = Image.new("RGBA", (IMG_W, 220), (0, 0, 0, 0))
+            # Gradient fade: photo → BG_DARK over bottom 40% of photo zone
+            fade_h = int(photo_zone_h * 0.48)
+            fade_start = photo_zone_bot - fade_h
+            grad = Image.new("RGBA", (IMG_W, fade_h), (0, 0, 0, 0))
             grad_d = ImageDraw.Draw(grad)
-            for _gy in range(220):
-                _a = int((_gy / 220) ** 1.3 * 248)
-                grad_d.line([(0, _gy), (IMG_W, _gy)], fill=(13, 17, 28, _a))
+            for _gy in range(fade_h):
+                _a = int((_gy / fade_h) ** 1.5 * 255)
+                grad_d.line([(0, _gy), (IMG_W, _gy)],
+                            fill=(BG_DARK[0], BG_DARK[1], BG_DARK[2], _a))
             img_rgba = img.convert("RGBA")
-            img_rgba.alpha_composite(grad, (0, photo_zone_bot - 110))
+            img_rgba.alpha_composite(grad, (0, fade_start))
             img = img_rgba.convert("RGB")
-
-            # Solid dark card for the text zone
-            card_overlay = Image.new("RGBA", (IMG_W, IMG_H), (0, 0, 0, 0))
-            card_draw    = ImageDraw.Draw(card_overlay)
-            card_draw.rectangle([(0, photo_zone_bot + 80), (IMG_W, IMG_H - 90)],
-                                 fill=(13, 17, 28, 235))
-            img_rgba = img.convert("RGBA")
-            img_rgba.alpha_composite(card_overlay)
-            img  = img_rgba.convert("RGB")
             draw = ImageDraw.Draw(img)
 
-            # Text zone lives inside the dark card
-            content_top = photo_zone_bot + 120
-            content_bot = IMG_H - 180
+            # Text zone: just below photo fade-out
+            content_top = photo_zone_bot + 30
+            content_bot = IMG_H - 110
         else:
             # No photo — full dark background, text fills the canvas
             content_top = 280 if label else 200
@@ -857,23 +887,26 @@ def create_slide(text: str, idx: int, total: int, category: str,
                              (lbl_x + lbl_w, lbl_y + lbl_bbox[3] + 14)], fill=accent)
 
         # Body text — centred vertically in the available text zone
-        pad   = 80
+        # Style: first word-chunk in ACCENT (bold color), rest in WHITE — like Content Planet
+        pad   = 72
         max_w = IMG_W - pad * 2
-        font, lines = fit_text(draw, text, 72, max_w, 8)
+        font, lines = fit_text(draw, text, 76, max_w, 8)
         fs    = font.size
-        lh    = fs + 24
+        lh    = fs + 28
         th    = len(lines) * lh
-        y = content_top + max(0, (content_bot - content_top - th) // 2)
+        ty    = content_top + max(0, (content_bot - content_top - th) // 2)
 
+        # Two-tone colouring: accent for first line, white for the rest
         for i, line in enumerate(lines):
             colour = accent if i == 0 else C_WHITE
-            draw_text_shadow(draw, (pad, y), line, font, colour, shadow_offset=3)
-            y += lh
+            draw_text_shadow(draw, (pad, ty), line, font, colour,
+                             shadow_offset=4, shadow_color=(0, 0, 0, 200))
+            ty += lh
 
-        # Accent left border
-        bar_top    = content_top + max(0, (content_bot - content_top - th) // 2) - 8
-        bar_bottom = bar_top + th + 8
-        draw.rectangle([(40, bar_top), (48, bar_bottom)], fill=accent)
+        # Accent left border — visual anchor
+        bar_top    = content_top + max(0, (content_bot - content_top - th) // 2) - 10
+        bar_bottom = bar_top + th + 16
+        draw.rectangle([(36, bar_top), (46, bar_bottom)], fill=accent)
 
     # ── Bottom branding bar
     draw.rectangle([(0, IMG_H - 90), (IMG_W, IMG_H)], fill=BG_CARD)
