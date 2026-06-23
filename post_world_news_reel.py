@@ -615,19 +615,19 @@ def create_blurred_bg_and_fg(img: Image.Image, target_w: int, target_h: int):
     """
     # 1. Blurred Background
     bg = crop_needed_size(img, target_w, target_h)
-    bg = bg.filter(ImageFilter.GaussianBlur(radius=30))
-    bg = ImageEnhance.Brightness(bg).enhance(0.4)
+    bg = bg.filter(ImageFilter.GaussianBlur(radius=35))
+    bg = ImageEnhance.Brightness(bg).enhance(0.45)
     
-    # 2. Sharp Foreground
+    # 2. Sharp Foreground (Made Much Bigger)
     src_w, src_h = img.size
     max_w = target_w - 80  # small margin on sides
-    max_h = int(target_h * 0.50) # max 50% of screen height
+    max_h = int(target_h * 0.65) # Increased to 65% of screen height
     
     # Scale to fit inside max_w x max_h
     scale = min(max_w / src_w, max_h / src_h)
     
-    # Cap upscaling to 1.5x to prevent tiny images from becoming blurry
-    if scale > 1.5: scale = 1.5  
+    # Cap upscaling to 1.2x to prevent tiny images from becoming blurry
+    if scale > 1.2: scale = 1.2  
     
     new_w = int(src_w * scale)
     new_h = int(src_h * scale)
@@ -679,16 +679,19 @@ def create_slide(text: str, idx: int, total: int, category: str,
             
             # Paste sharp foreground image at top, horizontally centered
             paste_x = (IMG_W - fg_w) // 2
-            paste_y = 120
+            paste_y = 100
             img.paste(fg_photo, (paste_x, paste_y))
             
-            # Apply clean dark gradient overlay for text readability
+            # Apply clean gradient overlay for text readability
             overlay = Image.new("RGBA", (IMG_W, IMG_H), (0, 0, 0, 0))
             od = ImageDraw.Draw(overlay)
-            start_y = int(IMG_H * 0.35)  # Start fading from 35% down
-            for y in range(start_y, IMG_H):
-                progress = (y - start_y) / (IMG_H - start_y)
-                alpha = int(225 * (progress ** 1.4))  # Smooth curve, up to 225 opacity
+            for y in range(IMG_H):
+                # Base gradient from top to bottom
+                alpha = int(230 * (y / IMG_H) ** 1.2)
+                # Add extra darkness in the center (700px to 1100px) where text sits
+                if 700 < y < 1100:
+                    alpha += 70
+                alpha = min(255, alpha)
                 od.line([(0, y), (IMG_W, y)], fill=(0, 0, 0, alpha))
             img_rgba = img.convert("RGBA")
             img_rgba.alpha_composite(overlay)
@@ -735,10 +738,9 @@ def create_slide(text: str, idx: int, total: int, category: str,
                 all_lines.extend([(l, colour) for l in chunk_lines])
 
             total_text_h = len(all_lines) * lh
-            # Center text in the lower-middle zone (between 55% and 88% height)
-            text_zone_top = int(IMG_H * 0.55)
-            text_zone_bot = int(IMG_H * 0.88)
-            y = text_zone_top + (text_zone_bot - text_zone_top - total_text_h) // 2
+            # TRUE VERTICAL CENTER: Centered around the exact middle of the screen (minus bottom bar)
+            # Add 40px to account for the divider line below
+            y = ((IMG_H - 90) // 2) - ((total_text_h + 40) // 2)
 
             for line_txt, line_col in all_lines:
                 bx = draw.textbbox((0, 0), line_txt, font=font_h)[2]
@@ -758,10 +760,9 @@ def create_slide(text: str, idx: int, total: int, category: str,
             lh = fs + 24
             th = len(lines) * lh
             
-            # Center text in the lower-middle zone (between 55% and 88% height)
-            text_zone_top = int(IMG_H * 0.55)
-            text_zone_bot = int(IMG_H * 0.88)
-            ty = text_zone_top + (text_zone_bot - text_zone_top - th) // 2
+            label_h = 80 if label else 0
+            # TRUE VERTICAL CENTER: Center the label + text block together
+            ty = ((IMG_H - 90) // 2) - ((th + label_h) // 2) + label_h
 
             # Draw Label above text
             if label:
