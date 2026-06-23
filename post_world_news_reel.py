@@ -1,12 +1,3 @@
-Here is the updated file! I have made the two specific changes you requested:
-
-1. **True Vertical Centering:** The text block on both the hook and content slides is now mathematically calculated to sit in the **exact vertical center** of the safe screen area (above the bottom branding bar). It is no longer anchored to the bottom.
-2. **Fixed Facebook URL:** The CTA slide now explicitly displays `facebook.com/aiacademylearning` regardless of what page name variable is passed. 
-3. **Adjusted Gradient Overlay:** Because the text is now in the true center, I updated the gradient overlay to darken the center of the screen slightly more than the edges. This guarantees your text is perfectly readable over *any* background image without needing ugly text boxes.
-
-You can copy this entire block and replace your current file:
-
-```python
 """
 post_world_news_reel.py
 ========================
@@ -1158,4 +1149,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
