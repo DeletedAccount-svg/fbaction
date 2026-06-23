@@ -72,7 +72,55 @@ ZOOM_AMOUNT     = 0.08     # Ken Burns zoom: 8% scale increase over slide durati
 MUSIC_PATH       = "/tmp/bg_music.wav"
 MUSIC_VOLUME     = 0.18     # keep music subtle under the visuals
 BEAT_SAMPLE_RATE = 44100
-BEAT_BPM         = 72       # slow lofi tempo
+BEAT_BPM         = 72       # slow lofi tempo — default/fallback
+
+# ── Mood presets: each mood picks a tempo + chord progression (semitones
+# from A4) + drum intensity, so the beat matches the article's category.
+MOOD_PRESETS = {
+    "chill": {
+        "bpm": 72,
+        "minor": False,
+        "kick_amp": 0.9, "snare_amp": 0.6,
+        "chords": [
+            [-9, -5, -2],     # Cmaj-ish
+            [-14, -10, -7],   # Gmaj-ish
+            [-12, -8, -5],    # Amin-ish
+            [-17, -13, -10],  # Fmaj-ish
+        ],
+    },
+    "dramatic": {
+        "bpm": 60,
+        "minor": True,
+        "kick_amp": 1.15, "snare_amp": 0.75,
+        "chords": [
+            [-12, -8, -5],    # Amin
+            [-17, -13, -10],  # Fmaj (relative major lift)
+            [-19, -15, -12],  # Dmin
+            [-14, -11, -7],   # Gmaj-ish (tension)
+        ],
+    },
+    "upbeat": {
+        "bpm": 100,
+        "minor": False,
+        "kick_amp": 1.0, "snare_amp": 0.7,
+        "chords": [
+            [-9, -5, -2],     # Cmaj
+            [-2, 2, 5],       # Gmaj
+            [0, 4, 7],        # Amaj-ish (bright lift)
+            [-5, -1, 2],      # Fmaj
+        ],
+    },
+}
+
+# Which article category leans toward which mood
+CATEGORY_MOOD = {
+    "BALITA":    "dramatic",
+    "PULITIKA":  "dramatic",
+    "PERA":      "chill",
+    "NEGOSYO":   "chill",
+    "CHISMIS":   "upbeat",
+    "LIFESTYLE": "upbeat",
+}
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RSS FEEDS  (same as carousel version — add/remove freely)
@@ -226,27 +274,28 @@ def _mix(base: np.ndarray, addition: np.ndarray, at_sample: int) -> None:
         base[at_sample:end] += addition[:seg]
 
 
-def generate_lofi_beat(duration: float, path: str,
-                        sr: int = BEAT_SAMPLE_RATE, bpm: int = BEAT_BPM) -> str:
+def generate_lofi_beat(duration: float, path: str, mood: str = "chill",
+                        sr: int = BEAT_SAMPLE_RATE) -> str:
     """
-    Build a simple chill lofi loop entirely with numpy math — sine-wave
+    Build a simple lofi loop entirely with numpy math — sine-wave
     chords + drum hits synthesized from scratch, then lowpass-filtered
     and vinyl-crackled for that dusty bedroom-producer vibe.
     No internet, no audio files, no API keys. Just rocks and sticks.
+
+    `mood` picks the tempo/chords/drum intensity — one of "chill",
+    "dramatic", "upbeat" (see MOOD_PRESETS). Falls back to "chill"
+    if an unknown mood is passed.
     """
+    preset = MOOD_PRESETS.get(mood, MOOD_PRESETS["chill"])
+    bpm = preset["bpm"]
+
     n_samples = int(sr * duration)
     mix = np.zeros(n_samples)
 
     beat_dur = 60.0 / bpm
     bar_dur  = beat_dur * 4
 
-    # ii–V–I–vi style chill chord loop, in semitones from A4
-    chord_progression = [
-        [-9, -5, -2],   # Cmaj-ish
-        [-14, -10, -7], # Gmaj-ish
-        [-12, -8, -5],  # Amin-ish
-        [-17, -13, -10],# Fmaj-ish
-    ]
+    chord_progression = preset["chords"]
 
     n_bars = max(1, int(math.ceil(duration / bar_dur)))
     for bar in range(n_bars):
@@ -264,9 +313,9 @@ def generate_lofi_beat(duration: float, path: str,
         for beat in range(4):
             beat_sample = start_sample + int(beat * beat_dur * sr)
             if beat in (0, 2):
-                _mix(mix, _kick(sr), beat_sample)
+                _mix(mix, _kick(sr) * preset["kick_amp"], beat_sample)
             if beat in (1, 3):
-                _mix(mix, _snare(sr), beat_sample)
+                _mix(mix, _snare(sr) * preset["snare_amp"], beat_sample)
             # lazy lofi hats on the off-beats
             _mix(mix, _hat(sr), beat_sample + int(beat_dur * sr * 0.5))
 
@@ -293,14 +342,15 @@ def generate_lofi_beat(duration: float, path: str,
     return path
 
 
-def setup_music(duration: float = 60.0) -> bool:
+def setup_music(duration: float = 60.0, mood: str = "chill") -> bool:
     """
     Generate the background beat in pure Python — guaranteed to work,
     no download, no flaky third-party server to beg for fire.
+    `mood` should be one of "chill", "dramatic", "upbeat" (see MOOD_PRESETS).
     """
     try:
-        print("  🎵 UGH! Smashing rocks together to make beat… (pure Python, no download)")
-        generate_lofi_beat(duration, MUSIC_PATH)
+        print(f"  🎵 UGH! Smashing rocks together to make beat (mood: {mood})…")
+        generate_lofi_beat(duration, MUSIC_PATH, mood=mood)
         print(f"  🎵 Beat made! Stored at fire-pit → {MUSIC_PATH}")
         return True
     except Exception as e:
@@ -1033,11 +1083,6 @@ def main():
     print("\n📦 Setting up fonts…")
     setup_fonts()
 
-    # ── Music (generated to roughly match the video length)
-    print("\n🎵 Setting up background beat…")
-    est_duration = len(SLIDE_LABELS) * SLIDE_DURATION + 2.0
-    has_music = setup_music(duration=est_duration)
-
     # ── Fetch articles
     print("\n📰 Fetching articles from RSS feeds…")
     articles = fetch_articles()
@@ -1061,6 +1106,12 @@ def main():
     print(f"   Title     : {article['title'][:80]}")
     print(f"   Link      : {article['link']}")
     print(f"   Image URL : {article.get('image_url', 'none')[:80] or 'none'}")
+
+    # ── Music — generated now, matched to this article's category mood
+    mood = CATEGORY_MOOD.get(article["category"], "chill")
+    print(f"\n🎵 Setting up background beat (category {article['category']} → mood '{mood}')…")
+    est_duration = len(SLIDE_LABELS) * SLIDE_DURATION + 2.0
+    has_music = setup_music(duration=est_duration, mood=mood)
 
     # ── Download article image (vertical crop)
     print("\n📷 Fetching article photo…")
