@@ -25,7 +25,7 @@ GitHub Actions dependencies (add to your workflow pip install line):
 import os, sys, json, random, requests, re, time, base64, math, tempfile, wave, struct
 import xml.etree.ElementTree as ET
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance, ImageOps
 from io import BytesIO
 from html import unescape
 
@@ -729,10 +729,15 @@ def create_slide(text: str, idx: int, total: int, category: str,
             photo_zone_h   = 780        # show 780px of clear photo (about 40%)
             photo_zone_bot = photo_zone_top + photo_zone_h   # y=920
 
-            # Crop top 40% of source photo (1080×1920) for best face/subject framing
-            src_crop_h  = int(IMG_H * 0.40)   # 768px from source
-            photo_strip = article_photo.crop((0, 0, IMG_W, src_crop_h))
-            photo_strip = photo_strip.resize((IMG_W, photo_zone_h), Image.LANCZOS)
+            # Use ImageOps.fit for crop-to-fill (like CSS object-fit:cover).
+            # This preserves aspect ratio — no stretch, no pixelation.
+            # Anchor top-center so faces/subjects stay in frame.
+            photo_strip = ImageOps.fit(
+                article_photo,
+                (IMG_W, photo_zone_h),
+                method=Image.LANCZOS,
+                centering=(0.5, 0.0)   # 0.0 = anchor top edge, keeps top of photo
+            )
             img.paste(photo_strip, (0, photo_zone_top))
 
             # Smooth gradient fade at photo bottom  →  dark card transition
