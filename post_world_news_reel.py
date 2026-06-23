@@ -1,14 +1,3 @@
-Here is the **complete, fully updated file**. 
-
-I've redesigned the visual style based on your reference image. Here is what changed to make it look clean, professional, and perfectly readable:
-
-1. **Clean Background Overlay:** The photo now fills the entire screen (natively cropped, zero pixelation). A smooth, clean gradient overlay fades from transparent at the top to dark at the bottom, exactly like your reference image.
-2. **Text Centering (Lower-Center):** The text is now comfortably anchored in the **lower-center** of the screen (between 55% and 88% height). This keeps it out of the extreme bottom UI elements and makes it much easier to read.
-3. **Perfect Image Scaling:** The `crop_needed_size` function now maintains aspect ratio and fills the entire 1080x1920 canvas using LANCZOS resampling. It guarantees no squashed images, no black bars, and zero pixelation.
-
-You can copy this entire block and replace your current file:
-
-```python
 """
 post_world_news_reel.py
 ========================
@@ -1162,4 +1151,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-```
