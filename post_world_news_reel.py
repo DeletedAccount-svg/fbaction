@@ -47,7 +47,7 @@ FB_PAGE_ID      = os.environ["FB_PAGE_ID"]
 FB_ACCESS_TOKEN = os.environ["FB_ACCESS_TOKEN"]
 GH_RELEASE_TOKEN = os.environ.get("GH_RELEASE_TOKEN", os.environ.get("GITHUB_TOKEN", ""))
 GROQ_API_KEY    = os.environ.get("GROQ_API_KEY", "")
-PAGE_NAME       = os.environ.get("PAGE_NAME", "yourpage")
+PAGE_NAME       = os.environ.get("PAGE_NAME", "aiacademylearning")
 
 # ── Canvas: vertical 9:16 for Reels
 IMG_W, IMG_H    = 1080, 1920
@@ -614,8 +614,8 @@ def create_slide(text: str, idx: int, total: int, category: str,
     use_photo = article_photo and not is_cta
 
     bg   = make_bg(article_photo if use_photo else None, accent,
-                   blur=10 if is_hook else 16,
-                   darkness=0.45 if is_hook else 0.65)
+                   blur=10 if is_hook else 14,
+                   darkness=0.45 if is_hook else 0.50)   # lighter blur-bg for content slides
     img  = bg.copy()
     draw = ImageDraw.Draw(img)
 
@@ -624,7 +624,7 @@ def create_slide(text: str, idx: int, total: int, category: str,
 
     # ── Category pill (top-left)
     pill_font = get_font(34)
-    pill_text = f"{emoji}  {category}"
+    pill_text = category   # no emoji — Poppins font no have emoji glyphs, would show broken box
     pill_bbox = draw.textbbox((0, 0), pill_text, font=pill_font)
     pw = pill_bbox[2] + 44
     ph = 58
@@ -666,7 +666,7 @@ def create_slide(text: str, idx: int, total: int, category: str,
 
         # "SWIPE UP" nudge at bottom
         nudge_font = get_font(32, bold=False)
-        draw.text((IMG_W // 2, IMG_H - 130), "👆 I-swipe para sa buong kwento",
+        draw.text((IMG_W // 2, IMG_H - 130), "SWIPE UP for the full story",
                   font=nudge_font, anchor="mm", fill=C_GRAY)
 
     # ── CTA SLIDE
@@ -681,23 +681,35 @@ def create_slide(text: str, idx: int, total: int, category: str,
         # Centred CTA block — pushed slightly above centre on tall canvas
         centre_y = IMG_H // 2 - 60
 
-        e_font = get_font(160)
-        draw.text((IMG_W // 2, centre_y - 160), "🔥", font=e_font, anchor="mm")
+        # Decorative starburst instead of broken emoji
+        import math as _math
+        star_cx, star_cy = IMG_W // 2, centre_y - 130
+        for _angle in range(0, 360, 20):
+            _r_inner = 38
+            _r_outer = 82
+            _x1 = star_cx + int(_r_inner * _math.cos(_math.radians(_angle)))
+            _y1 = star_cy + int(_r_inner * _math.sin(_math.radians(_angle)))
+            _x2 = star_cx + int(_r_outer * _math.cos(_math.radians(_angle + 10)))
+            _y2 = star_cy + int(_r_outer * _math.sin(_math.radians(_angle + 10)))
+            draw.line([(_x1, _y1), (_x2, _y2)], fill=accent, width=7)
+        draw.ellipse([(star_cx - 30, star_cy - 30), (star_cx + 30, star_cy + 30)], fill=accent)
 
-        draw.text((IMG_W // 2, centre_y + 60), "FOLLOW",
-                  font=get_font(44, bold=False), anchor="mm", fill=C_GRAY)
-        draw.text((IMG_W // 2, centre_y + 150), f"@{PAGE_NAME}",
-                  font=get_font(76), anchor="mm", fill=C_WHITE)
-        draw.text((IMG_W // 2, centre_y + 260),
-                  "For the latest world news! 📲",
-                  font=get_font(38, bold=False), anchor="mm", fill=C_GRAY)
+        draw.text((IMG_W // 2, centre_y + 50), "FOLLOW US ON FACEBOOK",
+                  font=get_font(40, bold=False), anchor="mm", fill=C_GRAY)
+        draw.text((IMG_W // 2, centre_y + 155), "AI Academy",
+                  font=get_font(84), anchor="mm", fill=C_WHITE)
+        draw.text((IMG_W // 2, centre_y + 265),
+                  f"facebook.com/{PAGE_NAME}",
+                  font=get_font(40, bold=False), anchor="mm", fill=accent)
         draw.rectangle([(200, centre_y + 330), (IMG_W - 200, centre_y + 338)], fill=accent)
-        draw.text((IMG_W // 2, centre_y + 390), "It's free. Follow now! 😄",
+        draw.text((IMG_W // 2, centre_y + 395), "For the latest world news!",
+                  font=get_font(38, bold=False), anchor="mm", fill=C_GRAY)
+        draw.text((IMG_W // 2, centre_y + 460), "Follow now — it is free!",
                   font=get_font(34, bold=False), anchor="mm", fill=C_GRAY)
 
         # DM-share nudge
         draw.text((IMG_W // 2, IMG_H - 130),
-                  "📤 Share this with a friend!",
+                  "Share this with a friend!",
                   font=get_font(32, bold=False), anchor="mm", fill=C_GRAY)
 
     # ── CONTENT SLIDES
@@ -705,44 +717,76 @@ def create_slide(text: str, idx: int, total: int, category: str,
         label = SLIDE_LABELS[idx] if idx < len(SLIDE_LABELS) else ""
 
         if use_photo:
-            card_top = 150
-            card_bot = IMG_H - 120
-            card_img = Image.new("RGBA", (IMG_W, IMG_H), (0, 0, 0, 0))
-            card_d   = ImageDraw.Draw(card_img)
-            card_d.rectangle([(48, card_top), (IMG_W - 48, card_bot)],
-                              fill=(13, 17, 28, 185))
+            # ── NEW DESIGN: clear photo on top, dark card + text on bottom ──
+            #
+            # The old design pasted an opaque dark card over the ENTIRE slide,
+            # which buried the photo completely. Now we:
+            #  1. Paste the clear (unblurred) photo in the upper zone
+            #  2. Fade it into a dark card below
+            #  3. Put all text inside the dark card zone
+
+            photo_zone_top = 140        # starts below pill/counter row
+            photo_zone_h   = 780        # show 780px of clear photo (about 40%)
+            photo_zone_bot = photo_zone_top + photo_zone_h   # y=920
+
+            # Crop top 40% of source photo (1080×1920) for best face/subject framing
+            src_crop_h  = int(IMG_H * 0.40)   # 768px from source
+            photo_strip = article_photo.crop((0, 0, IMG_W, src_crop_h))
+            photo_strip = photo_strip.resize((IMG_W, photo_zone_h), Image.LANCZOS)
+            img.paste(photo_strip, (0, photo_zone_top))
+
+            # Smooth gradient fade at photo bottom  →  dark card transition
+            grad = Image.new("RGBA", (IMG_W, 220), (0, 0, 0, 0))
+            grad_d = ImageDraw.Draw(grad)
+            for _gy in range(220):
+                _a = int((_gy / 220) ** 1.3 * 248)
+                grad_d.line([(0, _gy), (IMG_W, _gy)], fill=(13, 17, 28, _a))
             img_rgba = img.convert("RGBA")
-            img_rgba.alpha_composite(card_img)
+            img_rgba.alpha_composite(grad, (0, photo_zone_bot - 110))
+            img = img_rgba.convert("RGB")
+
+            # Solid dark card for the text zone
+            card_overlay = Image.new("RGBA", (IMG_W, IMG_H), (0, 0, 0, 0))
+            card_draw    = ImageDraw.Draw(card_overlay)
+            card_draw.rectangle([(0, photo_zone_bot + 80), (IMG_W, IMG_H - 90)],
+                                 fill=(13, 17, 28, 235))
+            img_rgba = img.convert("RGBA")
+            img_rgba.alpha_composite(card_overlay)
             img  = img_rgba.convert("RGB")
             draw = ImageDraw.Draw(img)
 
-        # Reapply pill + counter (may have been overwritten by card)
+            # Text zone lives inside the dark card
+            content_top = photo_zone_bot + 120
+            content_bot = IMG_H - 180
+        else:
+            # No photo — full dark background, text fills the canvas
+            content_top = 280 if label else 200
+            content_bot = IMG_H - 180
+
+        # Reapply pill + counter on top of everything
         draw_rounded_rect(draw, px, py, px + pw, py + ph, 12, accent)
         draw.text((px + 22, py + 12), pill_text, font=pill_font, fill=C_WHITE)
         draw.text((IMG_W - 64, 58), f"{idx+1}/{total}",
                   font=ctr_font, anchor="rm", fill=C_GRAY)
 
-        # Label
+        # Label — placed differently depending on whether photo is shown
         if label:
             lbl_font = get_font(40)
             lbl_bbox = draw.textbbox((0, 0), label, font=lbl_font)
             lbl_w    = lbl_bbox[2]
             lbl_x    = (IMG_W - lbl_w) // 2
-            lbl_y    = 170
+            lbl_y    = (content_top - 75) if use_photo else 170
             draw.text((lbl_x, lbl_y), label, font=lbl_font, fill=accent)
             draw.rectangle([(lbl_x, lbl_y + lbl_bbox[3] + 8),
                              (lbl_x + lbl_w, lbl_y + lbl_bbox[3] + 14)], fill=accent)
 
-        # Body text — centred vertically in the taller canvas
+        # Body text — centred vertically in the available text zone
         pad   = 80
         max_w = IMG_W - pad * 2
         font, lines = fit_text(draw, text, 72, max_w, 8)
         fs    = font.size
         lh    = fs + 24
         th    = len(lines) * lh
-        # Push text to centre of remaining space below label
-        content_top = 280 if label else 200
-        content_bot = IMG_H - 180
         y = content_top + max(0, (content_bot - content_top - th) // 2)
 
         for i, line in enumerate(lines):
@@ -1162,7 +1206,7 @@ def main():
     time.sleep(3)
 
     try:
-        c2 = post_comment(post_id, "🌐 Visit us at https://ranksorcery.com/ for more! 🔥")
+        c2 = post_comment(post_id, f"Follow us on Facebook: https://www.facebook.com/{PAGE_NAME} for more world news!")
         print(f"   ✅ Comment 2 posted (site): {c2}")
     except Exception as e:
         print(f"   ⚠️  Could not post site comment: {e}")
