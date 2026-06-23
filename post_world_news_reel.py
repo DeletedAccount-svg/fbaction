@@ -363,7 +363,56 @@ def _looks_like_image(url: str) -> bool:
     return bool(re.search(r'\.(jpg|jpeg|png|webp)(\?.*)?$', url, re.IGNORECASE))
 
 
+# Patterns that indicate a site logo / icon rather than an article photo.
+# Me not want logo — me want REAL photo!
+_LOGO_SKIP_PATTERNS = re.compile(
+    r'(logo|favicon|icon|sprite|brand|header|badge|avatar|watermark)',
+    re.IGNORECASE
+)
+
+
+def _is_article_image(url: str) -> bool:
+    """Return True only if URL looks like a real article photo (not a logo)."""
+    return _looks_like_image(url) and not _LOGO_SKIP_PATTERNS.search(url)
+
+
+def scrape_og_image(article_url: str) -> str:
+    """
+    Scrape the article page for its og:image meta tag.
+    Used as fallback when RSS gives no per-item image (e.g. Al Jazeera).
+    Returns the image URL string or "" on failure.
+    """
+    if not article_url:
+        return ""
+    try:
+        r = requests.get(
+            article_url, headers=HEADERS, timeout=8,
+            allow_redirects=True
+        )
+        r.raise_for_status()
+        # Fast regex — no need for full HTML parser
+        m = re.search(
+            r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+            r.text, re.IGNORECASE
+        )
+        if not m:
+            # Try reversed attribute order: content before property
+            m = re.search(
+                r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']',
+                r.text, re.IGNORECASE
+            )
+        if m:
+            url = m.group(1).strip()
+            if _is_article_image(url):
+                print(f"    🖼  og:image scraped: {url[:80]}…")
+                return url
+    except Exception as e:
+        print(f"    ⚠️  og:image scrape failed for {article_url[:60]}: {e}")
+    return ""
+
+
 def extract_image_from_item(item, raw_xml_text: str = "") -> str:
+    # 1. media:content / media:thumbnail (most feeds)
     for tag in [
         "{http://search.yahoo.com/mrss/}content",
         "{http://search.yahoo.com/mrss/}thumbnail",
@@ -372,29 +421,43 @@ def extract_image_from_item(item, raw_xml_text: str = "") -> str:
         el = item.find(tag)
         if el is not None:
             url = el.get("url", "")
-            if url and _looks_like_image(url):
+            if url and _is_article_image(url):
                 return url
+
+    # 2. <enclosure>
     enc = item.find("enclosure")
     if enc is not None:
         url = enc.get("url", "")
         t   = enc.get("type", "")
-        if url and ("image" in t or _looks_like_image(url)):
+        if url and ("image" in t or _is_article_image(url)):
             return url
+
+    # 3. <img> tag inside description HTML
     desc_raw = item.findtext("description", "") or ""
     m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', desc_raw, re.IGNORECASE)
     if m:
         url = m.group(1)
-        if _looks_like_image(url):
+        if _is_article_image(url):
             return url
-    if raw_xml_text:
+
+    # 4. Last-resort: scan raw XML of THIS ITEM ONLY for image URLs.
+    #    UGH! Old code scanned the WHOLE feed XML — that is how it found
+    #    the channel logo and used it for every Al Jazeera article!
+    #    Now me only scan the XML fragment for this specific item.
+    try:
+        item_xml = ET.tostring(item, encoding="unicode")
+    except Exception:
+        item_xml = ""
+    if item_xml:
         matches = re.findall(
             r'https?://[^\s\'"<>]+\.(?:jpg|jpeg|png|webp)(?:\?[^\s\'"<>]*)?',
-            raw_xml_text, re.IGNORECASE
+            item_xml, re.IGNORECASE
         )
         for url in matches:
-            if "1x1" not in url and "pixel" not in url.lower():
+            if "1x1" not in url and "pixel" not in url.lower() and _is_article_image(url):
                 return url
-    return ""
+
+    return ""  # Caller will try og:image scraping as final fallback
 
 
 def fetch_articles() -> list[dict]:
@@ -411,6 +474,11 @@ def fetch_articles() -> list[dict]:
                 link      = (item.findtext("link") or "").strip()
                 image_url = extract_image_from_item(item, raw_text)
                 if title and link and len(title) > 10:
+                    # If RSS gave no image (common with Al Jazeera, NPR, etc.),
+                    # scrape the article page for its og:image — usually a
+                    # high-quality editorial photo!
+                    if not image_url:
+                        image_url = scrape_og_image(link)
                     articles.append({
                         "title":    title,
                         "desc":     desc[:800],
@@ -427,8 +495,8 @@ def fetch_article_image(image_url: str):
     """
     Download article photo at NATIVE resolution — no upscale!
     UGH! Old code force-resize small web image to 1080×1920 — THAT
-    is where pixelation came from! Me tribe smarter now: keep native
-    size, sharpen once, let downstream code do ONE targeted resize.
+    is where pixelation came from! Keep native size, sharpen once,
+    let downstream code do ONE targeted resize.
     """
     if not image_url:
         return None
@@ -576,14 +644,11 @@ def fit_text(draw, text: str, font_size: int, max_w: int, max_lines: int, bold=T
 def make_bg(photo, accent: tuple, blur: int = 10, darkness: float = 0.55):
     """
     Return 1080×1920 background.
-    Photo may be at native (small) resolution — we resize to canvas HERE
-    for the blurred background. Blur hides upscaling artifacts, so this
-    is safe. The clear photo strip in content slides does its OWN resize
-    directly from native to avoid double-upscale pixelation.
+    Photo may be at native resolution — we resize to canvas HERE
+    for the blurred background. Blur hides upscaling artifacts, so safe.
     """
     if photo:
         bg = photo.copy()
-        # Resize to canvas only for the blur layer — one targeted resize
         if bg.size != (IMG_W, IMG_H):
             bg = ImageOps.fit(bg, (IMG_W, IMG_H), method=Image.LANCZOS, centering=(0.5, 0.3))
         bg = bg.filter(ImageFilter.GaussianBlur(radius=blur))
@@ -731,9 +796,8 @@ def create_slide(text: str, idx: int, total: int, category: str,
             photo_zone_h   = 780        # show 780px of clear photo (about 40%)
             photo_zone_bot = photo_zone_top + photo_zone_h   # y=920
 
-            # Fit directly from native resolution → target strip size in ONE step.
-            # UGH! Old code used pre-upscaled 1080×1920 blob here — blurry!
-            # Now we go native → (IMG_W, photo_zone_h) directly — much sharper!
+            # Use ImageOps.fit for crop-to-fill (like CSS object-fit:cover).
+            # Fit directly from native resolution → strip size in ONE step.
             # Anchor top-center so faces/subjects stay in frame.
             photo_strip = ImageOps.fit(
                 article_photo,
@@ -741,7 +805,7 @@ def create_slide(text: str, idx: int, total: int, category: str,
                 method=Image.LANCZOS,
                 centering=(0.5, 0.0)   # 0.0 = anchor top edge, keeps top of photo
             )
-            # Sharpen after resize to recover detail lost in upscaling
+            # Sharpen after resize to recover crisp detail
             photo_strip = photo_strip.filter(
                 ImageFilter.UnsharpMask(radius=1.2, percent=150, threshold=3)
             )
@@ -815,7 +879,7 @@ def create_slide(text: str, idx: int, total: int, category: str,
     draw.rectangle([(0, IMG_H - 90), (IMG_W, IMG_H)], fill=BG_CARD)
     draw.rectangle([(0, IMG_H - 90), (IMG_W, IMG_H - 88)], fill=accent)
     brand_font = get_font(34, bold=False)
-    draw.text((IMG_W // 2, IMG_H - 44), f"@{PAGE_NAME}",
+    draw.text((IMG_W // 2, IMG_H - 44), "@ranksorcery.com",
               font=brand_font, anchor="mm", fill=C_GRAY)
 
     return img
@@ -1218,7 +1282,7 @@ def main():
     time.sleep(3)
 
     try:
-        c2 = post_comment(post_id, f"Follow us on Facebook: https://www.facebook.com/{PAGE_NAME} for more world news!")
+        c2 = post_comment(post_id, "Wondering how this is done? It's all run through our automated systems. Feel free to reach out at https://ranksorcery.com/ if you're interested in a similar setup.")
         print(f"   ✅ Comment 2 posted (site): {c2}")
     except Exception as e:
         print(f"   ⚠️  Could not post site comment: {e}")
