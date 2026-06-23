@@ -601,8 +601,7 @@ def post_comment(media_id: str, message: str) -> str:
     """Post a comment on a published Instagram media object."""
     r = requests.post(
         f"{IG_BASE}/{media_id}/comments",
-        params={"access_token": FB_ACCESS_TOKEN},
-        data={"message": message},
+        params={"access_token": FB_ACCESS_TOKEN, "message": message},
         timeout=30,
     )
     if not r.ok:
