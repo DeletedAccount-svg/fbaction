@@ -17,7 +17,7 @@ Optional:
 
 import os, sys, json, random, requests, re, time, base64
 import xml.etree.ElementTree as ET
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 from io import BytesIO
 from html import unescape
 
@@ -122,27 +122,141 @@ def strip_html(raw: str) -> str:
     return re.sub(r"<[^>]+>", "", unescape(raw)).strip()
 
 
+def extract_image_from_item(item, raw_xml_text: str = "") -> str:
+    """
+    Try multiple strategies to get an image URL from an RSS item.
+    Returns the URL string or "" if nothing found.
+    """
+    # ── Strategy 1: <media:content url="..."> or <media:thumbnail url="...">
+    # ElementTree strips namespace prefixes, so we search both with and without
+    for tag in [
+        "{http://search.yahoo.com/mrss/}content",
+        "{http://search.yahoo.com/mrss/}thumbnail",
+        "media:content",
+        "media:thumbnail",
+    ]:
+        el = item.find(tag)
+        if el is not None:
+            url = el.get("url", "")
+            if url and _looks_like_image(url):
+                return url
+
+    # ── Strategy 2: <enclosure> tag (podcasts/news often use this)
+    enc = item.find("enclosure")
+    if enc is not None:
+        url = enc.get("url", "")
+        t   = enc.get("type", "")
+        if url and ("image" in t or _looks_like_image(url)):
+            return url
+
+    # ── Strategy 3: scrape <img src="..."> from the description HTML
+    desc_raw = item.findtext("description", "") or ""
+    m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', desc_raw, re.IGNORECASE)
+    if m:
+        url = m.group(1)
+        if _looks_like_image(url):
+            return url
+
+    # ── Strategy 4: find any URL ending in an image extension inside the raw XML
+    # (catches <image>, custom tags, CDATA blocks, etc.)
+    if raw_xml_text:
+        matches = re.findall(
+            r'https?://[^\s\'"<>]+\.(?:jpg|jpeg|png|webp)(?:\?[^\s\'"<>]*)?',
+            raw_xml_text, re.IGNORECASE
+        )
+        for url in matches:
+            # skip tiny tracking pixels (often 1x1)
+            if "1x1" not in url and "pixel" not in url.lower():
+                return url
+
+    return ""
+
+
+def _looks_like_image(url: str) -> bool:
+    return bool(re.search(r'\.(jpg|jpeg|png|webp)(\?.*)?$', url, re.IGNORECASE))
+
+
 def fetch_articles() -> list[dict]:
     articles = []
     for feed in FEEDS:
         try:
             r = requests.get(feed["url"], headers=HEADERS, timeout=12)
             r.raise_for_status()
+            raw_text = r.text
             root = ET.fromstring(r.content)
             for item in root.findall(".//item")[:8]:
-                title = strip_html(item.findtext("title", ""))
-                desc  = strip_html(item.findtext("description", ""))
-                link  = (item.findtext("link") or "").strip()
+                title     = strip_html(item.findtext("title", ""))
+                desc      = strip_html(item.findtext("description", ""))
+                link      = (item.findtext("link") or "").strip()
+                image_url = extract_image_from_item(item, raw_text)
                 if title and link and len(title) > 10:
                     articles.append({
-                        "title":    title,
-                        "desc":     desc[:800],
-                        "link":     link,
-                        "category": feed["category"],
+                        "title":     title,
+                        "desc":      desc[:800],
+                        "link":      link,
+                        "category":  feed["category"],
+                        "image_url": image_url,
                     })
         except Exception as e:
             print(f"  ⚠️  Feed error [{feed['url']}]: {e}")
     return articles
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FETCH + PREPARE ARTICLE IMAGE
+# ─────────────────────────────────────────────────────────────────────────────
+def fetch_article_image(image_url: str) -> Image.Image | None:
+    """Download and return the article photo as a 1080×1080 cropped PIL image."""
+    if not image_url:
+        return None
+    try:
+        print(f"  📷 Fetching article image: {image_url[:80]}…")
+        r = requests.get(image_url, headers=HEADERS, timeout=15)
+        r.raise_for_status()
+        img = Image.open(BytesIO(r.content)).convert("RGB")
+
+        # Centre-crop to square, then resize to canvas
+        w, h    = img.size
+        side    = min(w, h)
+        left    = (w - side) // 2
+        top     = (h - side) // 2
+        img     = img.crop((left, top, left + side, top + side))
+        img     = img.resize((IMG_W, IMG_H), Image.LANCZOS)
+        print("  ✅ Article image loaded!")
+        return img
+    except Exception as e:
+        print(f"  ⚠️  Could not fetch article image: {e}")
+        return None
+
+
+def make_bg(photo: Image.Image | None, accent: tuple,
+            blur: int = 8, darkness: float = 0.55) -> Image.Image:
+    """
+    Return a 1080×1080 background layer.
+    - With photo: blur + darken it so text stays legible.
+    - Without photo: solid dark gradient fallback.
+    """
+    if photo:
+        bg = photo.copy()
+        bg = bg.filter(ImageFilter.GaussianBlur(radius=blur))
+        # darken
+        enhancer = ImageEnhance.Brightness(bg)
+        bg = enhancer.enhance(1 - darkness)
+        # subtle colour tint matching the category accent
+        tint = Image.new("RGB", (IMG_W, IMG_H), accent)
+        bg   = Image.blend(bg, tint, alpha=0.18)
+        return bg
+    else:
+        # Fallback: dark solid + faint accent gradient stripe
+        bg   = Image.new("RGB", (IMG_W, IMG_H), BG_DARK)
+        draw = ImageDraw.Draw(bg)
+        for y in range(IMG_H):
+            alpha = int(30 * (1 - y / IMG_H))
+            r     = min(255, BG_DARK[0] + accent[0] * alpha // 255)
+            g     = min(255, BG_DARK[1] + accent[1] * alpha // 255)
+            b     = min(255, BG_DARK[2] + accent[2] * alpha // 255)
+            draw.line([(0, y), (IMG_W, y)], fill=(r, g, b))
+        return bg
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -240,6 +354,13 @@ def draw_rounded_rect(draw, x0, y0, x1, y1, r, fill):
     draw.ellipse([x1 - 2*r, y1 - 2*r, x1, y1], fill=fill)
 
 
+def draw_text_shadow(draw, xy, text, font, fill, shadow_offset=3, shadow_color=(0, 0, 0, 180)):
+    """Draw text with a drop shadow for legibility over photos."""
+    sx, sy = xy[0] + shadow_offset, xy[1] + shadow_offset
+    draw.text((sx, sy), text, font=font, fill=shadow_color)
+    draw.text(xy, text, font=font, fill=fill)
+
+
 def fit_text(draw, text: str, font_size: int, max_w: int, max_lines: int, bold=True):
     """Return (font, lines) fitting within max_w px and max_lines."""
     while font_size >= 28:
@@ -261,21 +382,30 @@ def fit_text(draw, text: str, font_size: int, max_w: int, max_lines: int, bold=T
     return get_font(28, bold=bold), lines
 
 
-def create_slide(text: str, idx: int, total: int, category: str) -> Image.Image:
-    cat     = CATEGORIES.get(category, CATEGORIES["BALITA"])
-    accent  = cat["rgb"]
-    emoji   = cat["emoji"]
-
-    img  = Image.new("RGB", (IMG_W, IMG_H), BG_DARK)
-    draw = ImageDraw.Draw(img)
+def create_slide(text: str, idx: int, total: int, category: str,
+                 article_photo: Image.Image | None = None) -> Image.Image:
+    cat    = CATEGORIES.get(category, CATEGORIES["BALITA"])
+    accent = cat["rgb"]
+    emoji  = cat["emoji"]
 
     is_hook = idx == 0
     is_cta  = idx == total - 1
 
-    # ── Top accent stripe
+    # ── Background  ──────────────────────────────────────────────────────────
+    # Hook + content slides use the article photo (blurred/darkened).
+    # CTA slide always uses the plain dark background so the CTA pops.
+    use_photo = article_photo and not is_cta
+    bg = make_bg(article_photo if use_photo else None, accent,
+                 blur=10 if is_hook else 14,
+                 darkness=0.50 if is_hook else 0.62)
+
+    img  = bg.copy()
+    draw = ImageDraw.Draw(img)
+
+    # ── Top accent stripe  ────────────────────────────────────────────────────
     draw.rectangle([(0, 0), (IMG_W, 10)], fill=accent)
 
-    # ── Category pill  (top-left)
+    # ── Category pill  (top-left)  ────────────────────────────────────────────
     pill_font = get_font(26)
     pill_text = f"{emoji}  {category}"
     pill_bbox = draw.textbbox((0, 0), pill_text, font=pill_font)
@@ -285,23 +415,32 @@ def create_slide(text: str, idx: int, total: int, category: str) -> Image.Image:
     draw_rounded_rect(draw, px, py, px + pw, py + ph, 10, accent)
     draw.text((px + 18, py + 10), pill_text, font=pill_font, fill=C_WHITE)
 
-    # ── Slide counter (top-right)
+    # ── Slide counter (top-right)  ────────────────────────────────────────────
     ctr_font = get_font(24, bold=False)
     draw.text((IMG_W - 56, 44), f"{idx+1}/{total}", font=ctr_font, anchor="rm", fill=C_GRAY)
 
     # ────────────────────────────── HOOK SLIDE ──────────────────────────────
     if is_hook:
+        # Semi-transparent bottom gradient panel for text legibility
+        gradient = Image.new("RGBA", (IMG_W, 520), (0, 0, 0, 0))
+        gd       = ImageDraw.Draw(gradient)
+        for y in range(520):
+            alpha = int(210 * (y / 520))
+            gd.line([(0, y), (IMG_W, y)], fill=(0, 0, 0, alpha))
+        img_rgba = img.convert("RGBA")
+        img_rgba.paste(gradient, (0, IMG_H - 520), gradient)
+        img      = img_rgba.convert("RGB")
+        draw     = ImageDraw.Draw(img)
+
         font, lines = fit_text(draw, text.upper(), 76, IMG_W - 96, 5)
         fs   = font.size
         lh   = fs + 14
         th   = len(lines) * lh
-        y    = (IMG_H - th) // 2 - 20
+        y    = IMG_H - th - 110
         for line in lines:
             bx = draw.textbbox((0, 0), line, font=font)[2]
             x  = (IMG_W - bx) // 2
-            # drop shadow
-            draw.text((x + 3, y + 3), line, font=font, fill=(0, 0, 0))
-            draw.text((x,     y    ), line, font=font, fill=C_WHITE)
+            draw_text_shadow(draw, (x, y), line, font, C_WHITE, shadow_offset=4)
             y += lh
         # accent underline
         draw.rectangle([(IMG_W//2 - 80, y + 22), (IMG_W//2 + 80, y + 28)], fill=accent)
@@ -327,6 +466,19 @@ def create_slide(text: str, idx: int, total: int, category: str) -> Image.Image:
     else:
         label = SLIDE_LABELS[idx] if idx < len(SLIDE_LABELS) else ""
 
+        # Semi-transparent frosted card for text area (helps over busy photos)
+        if use_photo:
+            card_top = 120
+            card_bot = IMG_H - 80
+            card_img = Image.new("RGBA", (IMG_W, IMG_H), (0, 0, 0, 0))
+            card_d   = ImageDraw.Draw(card_img)
+            card_d.rectangle([(44, card_top), (IMG_W - 44, card_bot)],
+                              fill=(13, 17, 28, 180))
+            img_rgba = img.convert("RGBA")
+            img_rgba.alpha_composite(card_img)
+            img  = img_rgba.convert("RGB")
+            draw = ImageDraw.Draw(img)
+
         # Label
         if label:
             lbl_font = get_font(32)
@@ -348,9 +500,8 @@ def create_slide(text: str, idx: int, total: int, category: str) -> Image.Image:
         th    = len(lines) * lh
         y     = max(220, (IMG_H - th) // 2 + 10)
         for i, line in enumerate(lines):
-            # First line gets accent colour (emphasis)
             colour = accent if i == 0 else C_WHITE
-            draw.text((pad, y), line, font=font, fill=colour)
+            draw_text_shadow(draw, (pad, y), line, font, colour, shadow_offset=3)
             y += lh
 
         # Accent left border
@@ -358,7 +509,7 @@ def create_slide(text: str, idx: int, total: int, category: str) -> Image.Image:
         bar_bottom = bar_top + th + 8
         draw.rectangle([(36, bar_top), (42, bar_bottom)], fill=accent)
 
-    # ── Bottom branding bar
+    # ── Bottom branding bar  ─────────────────────────────────────────────────
     draw.rectangle([(0, IMG_H - 72), (IMG_W, IMG_H)], fill=BG_CARD)
     draw.rectangle([(0, IMG_H - 72), (IMG_W, IMG_H - 70)], fill=accent)
     brand_font = get_font(28, bold=False)
@@ -490,12 +641,27 @@ def main():
         sys.exit(1)
     print(f"   Found {len(articles)} articles across all feeds.")
 
-    # ── Pick one at random
-    article = random.choice(articles)
+    # ── Pick one at random (prefer articles with images)
+    articles_with_img    = [a for a in articles if a.get("image_url")]
+    articles_without_img = [a for a in articles if not a.get("image_url")]
+    if articles_with_img:
+        article = random.choice(articles_with_img)
+        print(f"   ✅ {len(articles_with_img)} articles had images — picking one with photo.")
+    else:
+        article = random.choice(articles_without_img)
+        print("   ⚠️  No articles had images — picking random article (text-only slides).")
+
     print(f"\n🎯 Selected article:")
-    print(f"   Category : {article['category']}")
-    print(f"   Title    : {article['title'][:80]}")
-    print(f"   Link     : {article['link']}")
+    print(f"   Category  : {article['category']}")
+    print(f"   Title     : {article['title'][:80]}")
+    print(f"   Link      : {article['link']}")
+    print(f"   Image URL : {article.get('image_url', 'none')[:80] or 'none'}")
+
+    # ── Download article image
+    print("\n📷 Fetching article photo…")
+    article_photo = fetch_article_image(article.get("image_url", ""))
+    if not article_photo:
+        print("   ℹ️  No article photo — slides will use the dark branded background.")
 
     # ── Generate slide texts
     print("\n✍️  Generating slide content…")
@@ -507,7 +673,8 @@ def main():
     print("\n🎨 Creating slide images…")
     images = []
     for i, text in enumerate(slide_texts):
-        img = create_slide(text, i, len(slide_texts), article["category"])
+        img = create_slide(text, i, len(slide_texts), article["category"],
+                           article_photo=article_photo)
         images.append(img)
         print(f"   Slide {i+1}/{len(slide_texts)} ✓")
 
