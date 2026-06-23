@@ -36,7 +36,7 @@ from html import unescape
 try:
     from moviepy.editor import (
         ImageClip, AudioFileClip, CompositeVideoClip,
-        concatenate_videoclips, ColorClip
+        concatenate_videoclips, ColorClip, VideoClip
     )
     import moviepy.video.fx.all as vfx
     MOVIEPY_OK = True
@@ -765,7 +765,7 @@ def make_ken_burns_clip(pil_img: Image.Image, duration: float,
         cropped_pil = Image.fromarray(cropped).resize((w, h), Image.LANCZOS)
         return np.array(cropped_pil)
 
-    return ImageClip(make_frame, duration=duration, ismask=False)
+    return VideoClip(make_frame, duration=duration)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
