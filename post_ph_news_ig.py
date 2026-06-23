@@ -421,14 +421,10 @@ def create_slide(text: str, idx: int, total: int, category: str,
 
     # ────────────────────────────── HOOK SLIDE ──────────────────────────────
     if is_hook:
-        # Semi-transparent bottom gradient panel for text legibility
-        gradient = Image.new("RGBA", (IMG_W, 520), (0, 0, 0, 0))
-        gd       = ImageDraw.Draw(gradient)
-        for y in range(520):
-            alpha = int(210 * (y / 520))
-            gd.line([(0, y), (IMG_W, y)], fill=(0, 0, 0, alpha))
+        # Full-image dark overlay so text is legible everywhere
+        overlay  = Image.new("RGBA", (IMG_W, IMG_H), (0, 0, 0, 160))
         img_rgba = img.convert("RGBA")
-        img_rgba.paste(gradient, (0, IMG_H - 520), gradient)
+        img_rgba.alpha_composite(overlay)
         img      = img_rgba.convert("RGB")
         draw     = ImageDraw.Draw(img)
 
@@ -436,7 +432,7 @@ def create_slide(text: str, idx: int, total: int, category: str,
         fs   = font.size
         lh   = fs + 14
         th   = len(lines) * lh
-        y    = IMG_H - th - 110
+        y    = (IMG_H - th) // 2   # ← centred vertically
         for line in lines:
             bx = draw.textbbox((0, 0), line, font=font)[2]
             x  = (IMG_W - bx) // 2
