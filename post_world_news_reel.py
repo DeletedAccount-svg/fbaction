@@ -28,6 +28,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance, ImageOps
 from io import BytesIO
 from html import unescape
+from urllib.parse import urljoin
 
 # moviepy — graceful import so we can show a clear error if missing
 try:
@@ -323,7 +324,7 @@ def setup_music(duration: float = 60.0, mood: str = "chill") -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# RSS FETCH
+# RSS FETCH & MULTI-IMAGE SCRAPER
 # ─────────────────────────────────────────────────────────────────────────────
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; PHNewsBot/1.0)"}
 
@@ -336,7 +337,7 @@ def _looks_like_image(url: str) -> bool:
 
 
 _LOGO_SKIP_PATTERNS = re.compile(
-    r'(logo|favicon|icon|sprite|brand|header|badge|avatar|watermark)',
+    r'(logo|favicon|icon|sprite|brand|header|badge|avatar|watermark|placeholder|blank|spinner|loading|arrow|button|play|pause|search|menu|close|next|prev)',
     re.IGNORECASE
 )
 
@@ -345,32 +346,44 @@ def _is_article_image(url: str) -> bool:
     return _looks_like_image(url) and not _LOGO_SKIP_PATTERNS.search(url)
 
 
-def scrape_og_image(article_url: str) -> str:
+def scrape_all_article_images(article_url: str) -> list[str]:
+    """
+    Scrape the article page for ALL relevant images.
+    Filters out logos and icons based on URL patterns.
+    """
+    urls = []
     if not article_url:
-        return ""
+        return urls
     try:
-        r = requests.get(
-            article_url, headers=HEADERS, timeout=8,
-            allow_redirects=True
-        )
+        r = requests.get(article_url, headers=HEADERS, timeout=10, allow_redirects=True)
         r.raise_for_status()
-        m = re.search(
-            r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
-            r.text, re.IGNORECASE
-        )
+        html = r.text
+        
+        # 1. og:image first (usually high quality)
+        m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
         if not m:
-            m = re.search(
-                r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']',
-                r.text, re.IGNORECASE
-            )
+            m = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', html, re.IGNORECASE)
         if m:
             url = m.group(1).strip()
             if _is_article_image(url):
-                print(f"    🖼  og:image scraped: {url[:80]}…")
-                return url
+                urls.append(url)
+        
+        # 2. All img tags
+        img_tags = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE)
+        for img_url in img_tags:
+            # Clean up relative URLs
+            if img_url.startswith('//'):
+                img_url = 'https:' + img_url
+            elif img_url.startswith('/'):
+                img_url = urljoin(article_url, img_url)
+            
+            if _is_article_image(img_url) and img_url not in urls:
+                urls.append(img_url)
+                
+        return urls[:8]  # Limit to 8 images max
     except Exception as e:
-        print(f"    ⚠️  og:image scrape failed for {article_url[:60]}: {e}")
-    return ""
+        print(f"    ⚠️  Multi-image scrape failed for {article_url[:60]}: {e}")
+    return []
 
 
 def extract_image_from_item(item, raw_xml_text: str = "") -> str:
@@ -443,24 +456,59 @@ def fetch_articles() -> list[dict]:
     return articles
 
 
+def scrape_og_image(article_url: str) -> str:
+    """Fallback single image scraper"""
+    imgs = scrape_all_article_images(article_url)
+    return imgs[0] if imgs else ""
+
+
 def fetch_article_image(image_url: str):
     """
-    Download article photo at NATIVE resolution — no upscaling, no sharpening!
-    Sharpening is done ONCE after the final crop in create_slide.
+    Download article photo at NATIVE resolution.
+    Filters out tiny icons/UI elements by checking dimensions.
     """
     if not image_url:
         return None
     try:
-        print(f"  📷 Fetching article image: {image_url[:80]}…")
+        print(f"  📷 Fetching image: {image_url[:80]}…")
         r = requests.get(image_url, headers=HEADERS, timeout=15)
         r.raise_for_status()
         img = Image.open(BytesIO(r.content)).convert("RGB")
         w, h = img.size
-        print(f"  ✅ Article image loaded at native size: {w}×{h}")
+        
+        # Filter out small icons/UI elements
+        if w < 300 or h < 200:
+            print(f"  ⚠️ Image too small ({w}x{h}), likely an icon. Skipping.")
+            return None
+            
+        print(f"  ✅ Image loaded at native size: {w}×{h}")
         return img
     except Exception as e:
-        print(f"  ⚠️  Could not fetch article image: {e}")
+        print(f"  ⚠️  Could not fetch image: {e}")
         return None
+
+
+def fetch_all_article_images(article: dict) -> list[Image.Image]:
+    """
+    Fetches the main RSS image, then scrapes the article page for up to 8 images.
+    Downloads them all and returns a list of PIL Image objects.
+    """
+    urls = []
+    if article.get("image_url"):
+        urls.append(article["image_url"])
+        
+    scraped_urls = scrape_all_article_images(article["link"])
+    for u in scraped_urls:
+        if u not in urls:
+            urls.append(u)
+            
+    images = []
+    for url in urls[:8]:  # Max 8 images
+        img = fetch_article_image(url)
+        if img:
+            images.append(img)
+            
+    return images
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -638,7 +686,7 @@ def create_blurred_bg_and_fg(img: Image.Image, target_w: int, target_h: int):
 
 
 def create_slide(text: str, idx: int, total: int, category: str,
-                 article_photo=None) -> Image.Image:
+                 article_photos=None) -> Image.Image:
     """Draw a single 1080×1920 slide image."""
     cat    = CATEGORIES.get(category, CATEGORIES["WORLD"])
     accent = cat["rgb"]
@@ -646,7 +694,13 @@ def create_slide(text: str, idx: int, total: int, category: str,
 
     is_hook = idx == 0
     is_cta  = idx == total - 1
-    use_photo = article_photo and not is_cta
+    
+    # Pick the photo for this specific slide. If only 1 photo exists, it uses that one for all slides.
+    current_photo = None
+    if article_photos:
+        current_photo = article_photos[idx % len(article_photos)]
+        
+    use_photo = current_photo is not None and not is_cta
 
     # Start with a dark base
     img  = Image.new("RGB", (IMG_W, IMG_H), BG_DARK)
@@ -673,8 +727,8 @@ def create_slide(text: str, idx: int, total: int, category: str,
     # ── HOOK & CONTENT SLIDES (Unified Clean Layout)
     if not is_cta:
         if use_photo:
-            # Get blurred bg and sharp fg
-            bg_photo, fg_photo, fg_w, fg_h = create_blurred_bg_and_fg(article_photo, IMG_W, IMG_H)
+            # Get blurred bg and sharp fg for THIS specific slide's photo
+            bg_photo, fg_photo, fg_w, fg_h = create_blurred_bg_and_fg(current_photo, IMG_W, IMG_H)
             img.paste(bg_photo, (0, 0))
             
             # Paste sharp foreground image at top, horizontally centered
@@ -1115,17 +1169,18 @@ def main():
     print(f"   Category  : {article['category']}")
     print(f"   Title     : {article['title'][:80]}")
     print(f"   Link      : {article['link']}")
-    print(f"   Image URL : {article.get('image_url', 'none')[:80] or 'none'}")
 
     mood = CATEGORY_MOOD.get(article["category"], "chill")
     print(f"\n🎵 Setting up background beat (category {article['category']} → mood '{mood}')…")
     est_duration = len(SLIDE_LABELS) * SLIDE_DURATION + 2.0
     has_music = setup_music(duration=est_duration, mood=mood)
 
-    print("\n📷 Fetching article photo…")
-    article_photo = fetch_article_image(article.get("image_url", ""))
-    if not article_photo:
-        print("   ℹ️  No article photo — slides use the dark branded background.")
+    print("\n📷 Fetching all article photos (up to 8)…")
+    article_photos = fetch_all_article_images(article)
+    if not article_photos:
+        print("   ℹ️  No article photos — slides use the dark branded background.")
+    else:
+        print(f"   ✅ Successfully fetched {len(article_photos)} photos for the video.")
 
     print("\n✍️  Generating slide content…")
     slide_texts = generate_slides(article)
@@ -1136,7 +1191,7 @@ def main():
     images = []
     for i, text in enumerate(slide_texts):
         img = create_slide(text, i, len(slide_texts), article["category"],
-                           article_photo=article_photo)
+                           article_photos=article_photos)
         images.append(img)
         print(f"   Slide {i+1}/{len(slide_texts)} ✓")
 
