@@ -609,9 +609,14 @@ def draw_rounded_rect(draw, x0, y0, x1, y1, r, fill):
     draw.ellipse([x1 - 2*r, y1 - 2*r, x1, y1], fill=fill)
 
 
-def draw_text_shadow(draw, xy, text, font, fill, shadow_offset=3, shadow_color=(0, 0, 0, 180)):
-    sx, sy = xy[0] + shadow_offset, xy[1] + shadow_offset
-    draw.text((sx, sy), text, font=font, fill=shadow_color)
+def draw_text_shadow(draw, xy, text, font, fill, shadow_offset=4, shadow_color=(0, 0, 0, 220)):
+    """
+    Draws text with a thick, soft shadow to ensure readability over clear images.
+    """
+    x, y = xy
+    # Draw multiple offsets for a thicker shadow
+    for dx, dy in [(-2, -2), (2, -2), (-2, 2), (2, 2), (0, -3), (0, 3), (-3, 0), (3, 0)]:
+        draw.text((x + dx, y + dy), text, font=font, fill=shadow_color)
     draw.text(xy, text, font=font, fill=fill)
 
 
@@ -680,7 +685,6 @@ def create_blurred_bg_and_fg(img: Image.Image, target_w: int, target_h: int):
     new_w = int(src_w * scale)
     new_h = int(src_h * scale)
     fg = img.resize((new_w, new_h), Image.LANCZOS)
-    fg = fg.filter(ImageFilter.UnsharpMask(radius=1.2, percent=120, threshold=3))
     
     return bg, fg, new_w, new_h
 
@@ -736,16 +740,14 @@ def create_slide(text: str, idx: int, total: int, category: str,
             paste_y = (IMG_H - fg_h) // 2
             img.paste(fg_photo, (paste_x, paste_y))
             
-            # Apply clean gradient overlay for text readability
+            # NO CENTRAL GRADIENT. We only apply a slight fade at the very bottom 
+            # for the branding bar so it doesn't clash with the image.
             overlay = Image.new("RGBA", (IMG_W, IMG_H), (0, 0, 0, 0))
             od = ImageDraw.Draw(overlay)
-            for y in range(IMG_H):
-                # Base gradient from top to bottom
-                alpha = int(230 * (y / IMG_H) ** 1.2)
-                # Add heavy extra darkness in the center (700px to 1200px) where text sits over the image
-                if 700 < y < 1200:
-                    alpha += 110
-                alpha = min(255, alpha)
+            start_fade = IMG_H - 250
+            for y in range(start_fade, IMG_H):
+                progress = (y - start_fade) / 250
+                alpha = int(200 * progress)
                 od.line([(0, y), (IMG_W, y)], fill=(0, 0, 0, alpha))
             img_rgba = img.convert("RGBA")
             img_rgba.alpha_composite(overlay)
@@ -800,7 +802,7 @@ def create_slide(text: str, idx: int, total: int, category: str,
                 bx = draw.textbbox((0, 0), line_txt, font=font_h)[2]
                 x  = (IMG_W - bx) // 2
                 draw_text_shadow(draw, (x, y), line_txt, font_h, line_col,
-                                 shadow_offset=5, shadow_color=(0, 0, 0, 220))
+                                 shadow_offset=5, shadow_color=(0, 0, 0, 230))
                 y += lh
 
             # Thin accent divider line below text
@@ -835,7 +837,7 @@ def create_slide(text: str, idx: int, total: int, category: str,
                 bx = draw.textbbox((0, 0), line, font=font)[2]
                 x  = (IMG_W - bx) // 2
                 draw_text_shadow(draw, (x, ty), line, font, colour,
-                                 shadow_offset=4, shadow_color=(0, 0, 0, 200))
+                                 shadow_offset=4, shadow_color=(0, 0, 0, 220))
                 ty += lh
 
     # ── CTA SLIDE
