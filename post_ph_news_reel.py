@@ -1,39 +1,44 @@
 """
 post_ph_news_reel.py
 ====================
-Philippine News Instagram REEL Poster — Animated Video Edition
-Same news pipeline as post_ph_news_ig.py BUT outputs a vertical
-1080×1920 MP4 Reel with Ken Burns zoom/pan per slide + background music.
+Philippine News Instagram REEL Poster — Animated Video Edition (Upgraded Layout)
 
-HOW IT DIFFERS FROM THE CAROUSEL VERSION:
-  - Slides are 1080×1920 (vertical 9:16) instead of 1080×1080 (square)
-  - Each slide is animated with a slow Ken Burns zoom/pan effect
-  - All slides are stitched into one MP4 using moviepy
-  - A royalty-free background music track is downloaded and mixed in
-  - The final video is uploaded as an Instagram REEL (not carousel)
+Visual layout, image handling, and rendering engine fully ported from
+post_world_news_reel.py for higher-quality output:
+  - Multi-image fetching (up to 8 photos, one per slide)
+  - Blurred background + sharp native-res foreground photo per slide
+  - Two-tone centered text (accent color + white)
+  - Better video encoding (preset=medium, crf=20)
+  - 120-char limit enforced on content slides
 
-Required GitHub Secrets (same as carousel version):
-  IG_USER_ID       — Instagram Business/Creator User ID (from Graph API)
+PH Instagram-specific things kept:
+  - PH RSS feeds (Rappler, Inquirer, GMA, PEP, etc.)
+  - Filipino/Taglish slide labels and Groq prompt
+  - PH category design tokens and hashtags
+  - Instagram Graph API posting (REELS container + publish)
+  - @{PAGE_NAME} branding throughout
+
+Required GitHub Secrets:
+  IG_USER_ID       — Instagram Business/Creator User ID
   FB_ACCESS_TOKEN  — Facebook Page Access Token with instagram_content_publish
-  (No IMGBB_API_KEY needed anymore — video is hosted via a throwaway
-   GitHub Release in this repo, using the built-in GITHUB_TOKEN.)
-  PAGE_NAME        — Your Instagram handle WITHOUT the @, e.g. yourpage.ph
+  PAGE_NAME        — Your Instagram handle WITHOUT @, e.g. yourpage.ph
 
 Optional:
   GROQ_API_KEY     — Free at console.groq.com — gives better Taglish slide content
+  GH_RELEASE_TOKEN — defaults to GITHUB_TOKEN (auto-provided by Actions)
 
-GitHub Actions dependencies (add to your workflow pip install line):
-  pip install requests Pillow moviepy numpy
+GitHub Actions dependencies:
+  pip install requests Pillow "moviepy<2" numpy
 """
 
-import os, sys, json, random, requests, re, time, base64, math, tempfile, wave, struct
+import os, sys, json, random, requests, re, time, math, wave
 import xml.etree.ElementTree as ET
 import numpy as np
-from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
+from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance, ImageOps
 from io import BytesIO
 from html import unescape
+from urllib.parse import urljoin
 
-# moviepy — graceful import so we can show a clear error if missing
 try:
     from moviepy.editor import (
         ImageClip, AudioFileClip, CompositeVideoClip,
@@ -47,45 +52,43 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
-IG_USER_ID      = os.environ["IG_USER_ID"]
-FB_ACCESS_TOKEN = os.environ["FB_ACCESS_TOKEN"]
+IG_USER_ID       = os.environ["IG_USER_ID"]
+FB_ACCESS_TOKEN  = os.environ["FB_ACCESS_TOKEN"]
 GH_RELEASE_TOKEN = os.environ.get("GH_RELEASE_TOKEN", os.environ.get("GITHUB_TOKEN", ""))
-GROQ_API_KEY    = os.environ.get("GROQ_API_KEY", "")
-PAGE_NAME       = os.environ.get("PAGE_NAME", "yourpage.ph")
+GROQ_API_KEY     = os.environ.get("GROQ_API_KEY", "")
+PAGE_NAME        = os.environ.get("PAGE_NAME", "yourpage.ph")
 
 # ── Canvas: vertical 9:16 for Reels
-IMG_W, IMG_H    = 1080, 1920
-IG_BASE         = "https://graph.facebook.com/v21.0"
+IMG_W, IMG_H = 1080, 1920
+IG_BASE      = "https://graph.facebook.com/v21.0"
 
-FONT_BOLD_URL   = "https://github.com/google/fonts/raw/main/ofl/poppins/Poppins-Bold.ttf"
-FONT_REG_URL    = "https://github.com/google/fonts/raw/main/ofl/poppins/Poppins-Regular.ttf"
-FONT_BOLD_PATH  = "/tmp/Poppins-Bold.ttf"
-FONT_REG_PATH   = "/tmp/Poppins-Regular.ttf"
+FONT_BOLD_URL  = "https://github.com/google/fonts/raw/main/ofl/poppins/Poppins-Bold.ttf"
+FONT_REG_URL   = "https://github.com/google/fonts/raw/main/ofl/poppins/Poppins-Regular.ttf"
+FONT_BOLD_PATH = "/tmp/Poppins-Bold.ttf"
+FONT_REG_PATH  = "/tmp/Poppins-Regular.ttf"
 
 # ── Video settings
-SLIDE_DURATION  = 4.0      # seconds each slide is shown
-FADE_DURATION   = 0.4      # crossfade between slides (seconds)
-FPS             = 30
-ZOOM_AMOUNT     = 0.08     # Ken Burns zoom: 8% scale increase over slide duration
+SLIDE_DURATION = 4.0   # seconds per slide
+FADE_DURATION  = 0.4   # crossfade between slides
+FPS            = 30
+ZOOM_AMOUNT    = 0.08  # Ken Burns: 8% scale increase over slide
 
-# ── Background music — generated in pure Python, no download, no fail-state
+# ── Background music
 MUSIC_PATH       = "/tmp/bg_music.wav"
-MUSIC_VOLUME     = 0.18     # keep music subtle under the visuals
+MUSIC_VOLUME     = 0.18
 BEAT_SAMPLE_RATE = 44100
-BEAT_BPM         = 72       # slow lofi tempo — default/fallback
 
-# ── Mood presets: each mood picks a tempo + chord progression (semitones
-# from A4) + drum intensity, so the beat matches the article's category.
+# ── Mood presets
 MOOD_PRESETS = {
     "chill": {
         "bpm": 72,
         "minor": False,
         "kick_amp": 0.9, "snare_amp": 0.6,
         "chords": [
-            [-9, -5, -2],     # Cmaj-ish
-            [-14, -10, -7],   # Gmaj-ish
-            [-12, -8, -5],    # Amin-ish
-            [-17, -13, -10],  # Fmaj-ish
+            [-9, -5, -2],
+            [-14, -10, -7],
+            [-12, -8, -5],
+            [-17, -13, -10],
         ],
     },
     "dramatic": {
@@ -93,10 +96,10 @@ MOOD_PRESETS = {
         "minor": True,
         "kick_amp": 1.15, "snare_amp": 0.75,
         "chords": [
-            [-12, -8, -5],    # Amin
-            [-17, -13, -10],  # Fmaj (relative major lift)
-            [-19, -15, -12],  # Dmin
-            [-14, -11, -7],   # Gmaj-ish (tension)
+            [-12, -8, -5],
+            [-17, -13, -10],
+            [-19, -15, -12],
+            [-14, -11, -7],
         ],
     },
     "upbeat": {
@@ -104,15 +107,14 @@ MOOD_PRESETS = {
         "minor": False,
         "kick_amp": 1.0, "snare_amp": 0.7,
         "chords": [
-            [-9, -5, -2],     # Cmaj
-            [-2, 2, 5],       # Gmaj
-            [0, 4, 7],        # Amaj-ish (bright lift)
-            [-5, -1, 2],      # Fmaj
+            [-9, -5, -2],
+            [-2, 2, 5],
+            [0, 4, 7],
+            [-5, -1, 2],
         ],
     },
 }
 
-# Which article category leans toward which mood
 CATEGORY_MOOD = {
     "BALITA":    "dramatic",
     "PULITIKA":  "dramatic",
@@ -123,7 +125,7 @@ CATEGORY_MOOD = {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# RSS FEEDS  (same as carousel version — add/remove freely)
+# RSS FEEDS — Philippine news sources
 # ─────────────────────────────────────────────────────────────────────────────
 FEEDS = [
     {"url": "https://www.rappler.com/feed/",                   "category": "BALITA"},
@@ -144,37 +146,37 @@ FEEDS = [
 # CATEGORY DESIGN TOKENS
 # ─────────────────────────────────────────────────────────────────────────────
 CATEGORIES = {
-    "BALITA":     {"rgb": (239,  68,  68), "emoji": "🔴"},
-    "PULITIKA":   {"rgb": (139,  92, 246), "emoji": "🗳️"},
-    "PERA":       {"rgb": ( 16, 185, 129), "emoji": "💸"},
-    "NEGOSYO":    {"rgb": (245, 158,  11), "emoji": "💼"},
-    "CHISMIS":    {"rgb": (236,  72, 153), "emoji": "👀"},
-    "LIFESTYLE":  {"rgb": ( 99, 102, 241), "emoji": "✨"},
+    "BALITA":    {"rgb": (239,  68,  68), "emoji": "🔴"},
+    "PULITIKA":  {"rgb": (139,  92, 246), "emoji": "🗳️"},
+    "PERA":      {"rgb": ( 16, 185, 129), "emoji": "💸"},
+    "NEGOSYO":   {"rgb": (245, 158,  11), "emoji": "💼"},
+    "CHISMIS":   {"rgb": (236,  72, 153), "emoji": "👀"},
+    "LIFESTYLE": {"rgb": ( 99, 102, 241), "emoji": "✨"},
 }
 
 SLIDE_LABELS = [
-    "",                  # 0 — hook
-    "ANO NANGYARI?",     # 1
-    "MGA DETALYE",       # 2
-    "TANDAAN ITO",       # 3
-    "BAKIT MAHALAGA?",   # 4
-    "PRO TIP",           # 5
-    "SA MADALING SALITA",# 6
-    "",                  # 7 — CTA
+    "",                   # 0 — hook
+    "ANO NANGYARI?",      # 1
+    "MGA DETALYE",        # 2
+    "TANDAAN ITO",        # 3
+    "BAKIT MAHALAGA?",    # 4
+    "PRO TIP",            # 5
+    "SA MADALING SALITA", # 6
+    "",                   # 7 — CTA
 ]
 
-BG_DARK  = (13,  17,  28)
-BG_CARD  = (22,  33,  56)
-C_WHITE  = (255, 255, 255)
-C_GRAY   = (148, 163, 184)
+BG_DARK = (13,  17,  28)
+BG_CARD = (22,  33,  56)
+C_WHITE = (255, 255, 255)
+C_GRAY  = (148, 163, 184)
 
 HASHTAG_MAP = {
-    "BALITA":     "#Balita #PhilippineNews #PilipinasNews #BreakingNewsPH",
-    "PULITIKA":   "#Pulitika #PhilippinePolitics #BalitangPolitika",
-    "PERA":       "#Pera #PinoyMoney #PersonalFinancePH #PaanoKumita",
-    "NEGOSYO":    "#Negosyo #PinoyEntrepreneur #StartupPH",
-    "CHISMIS":    "#Chismis #PinoyEntertainment #Showbiz",
-    "LIFESTYLE":  "#LifestylePH #PinoyLiving #TipsAtTricks",
+    "BALITA":    "#Balita #PhilippineNews #PilipinasNews #BreakingNewsPH",
+    "PULITIKA":  "#Pulitika #PhilippinePolitics #BalitangPolitika",
+    "PERA":      "#Pera #PinoyMoney #PersonalFinancePH #PaanoKumita",
+    "NEGOSYO":   "#Negosyo #PinoyEntrepreneur #StartupPH",
+    "CHISMIS":   "#Chismis #PinoyEntertainment #Showbiz",
+    "LIFESTYLE": "#LifestylePH #PinoyLiving #TipsAtTricks",
 }
 
 
@@ -201,13 +203,10 @@ def get_font(size: int, bold: bool = True) -> ImageFont.FreeTypeFont:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MUSIC — pure-Python lofi beat generator (no download, no external service)
+# MUSIC — pure-Python lofi beat generator (no download, no fail-state)
+# UGH! SMASH ROCKS TOGETHER. MAKE BEAT. NO NEED FIRE FROM OTHER TRIBE.
 # ─────────────────────────────────────────────────────────────────────────────
-# UGH! BEAT MAKER WORK WITH ROCK AND STICK ONLY. NO NEED FETCH FIRE FROM
-# OTHER TRIBE SERVER. ALWAYS WORK. ALWAYS THERE. GRUNT.
-
 def _note_freq(semitones_from_a4: float) -> float:
-    """Return frequency in Hz for a note N semitones away from A4 (440Hz)."""
     return 440.0 * (2.0 ** (semitones_from_a4 / 12.0))
 
 
@@ -217,7 +216,6 @@ def _sine(freq: float, dur: float, sr: int, amp: float = 1.0) -> np.ndarray:
 
 
 def _envelope(n: int, attack: float = 0.02, release: float = 0.3) -> np.ndarray:
-    """Simple attack/release envelope so notes don't click."""
     env = np.ones(n)
     a = max(1, int(n * attack))
     r = max(1, int(n * release))
@@ -227,7 +225,6 @@ def _envelope(n: int, attack: float = 0.02, release: float = 0.3) -> np.ndarray:
 
 
 def _lowpass(signal: np.ndarray, strength: float = 0.85) -> np.ndarray:
-    """Crude one-pole lowpass filter — gives that muffled lofi warmth."""
     out = np.zeros_like(signal)
     out[0] = signal[0]
     for i in range(1, len(signal)):
@@ -238,7 +235,7 @@ def _lowpass(signal: np.ndarray, strength: float = 0.85) -> np.ndarray:
 def _kick(sr: int, dur: float = 0.25) -> np.ndarray:
     n = int(sr * dur)
     t = np.linspace(0, dur, n, endpoint=False)
-    freq = np.linspace(150, 45, n)              # pitch drop = thump
+    freq = np.linspace(150, 45, n)
     wave_ = np.sin(2 * np.pi * np.cumsum(freq) / sr)
     return wave_ * np.exp(-t * 18) * 0.9
 
@@ -259,7 +256,6 @@ def _hat(sr: int, dur: float = 0.06) -> np.ndarray:
 
 
 def _vinyl_crackle(n: int, amount: float = 0.02) -> np.ndarray:
-    """Sparse little pops — the lofi 'dusty record' texture."""
     crackle = np.zeros(n)
     pops = np.random.choice(n, size=n // 800, replace=False)
     crackle[pops] = np.random.uniform(-1, 1, len(pops))
@@ -267,7 +263,6 @@ def _vinyl_crackle(n: int, amount: float = 0.02) -> np.ndarray:
 
 
 def _mix(base: np.ndarray, addition: np.ndarray, at_sample: int) -> None:
-    """Add a short sound into a longer buffer in place, clipping at edges."""
     end = min(at_sample + len(addition), len(base))
     seg = end - at_sample
     if seg > 0:
@@ -276,59 +271,36 @@ def _mix(base: np.ndarray, addition: np.ndarray, at_sample: int) -> None:
 
 def generate_lofi_beat(duration: float, path: str, mood: str = "chill",
                         sr: int = BEAT_SAMPLE_RATE) -> str:
-    """
-    Build a simple lofi loop entirely with numpy math — sine-wave
-    chords + drum hits synthesized from scratch, then lowpass-filtered
-    and vinyl-crackled for that dusty bedroom-producer vibe.
-    No internet, no audio files, no API keys. Just rocks and sticks.
-
-    `mood` picks the tempo/chords/drum intensity — one of "chill",
-    "dramatic", "upbeat" (see MOOD_PRESETS). Falls back to "chill"
-    if an unknown mood is passed.
-    """
     preset = MOOD_PRESETS.get(mood, MOOD_PRESETS["chill"])
     bpm = preset["bpm"]
-
     n_samples = int(sr * duration)
     mix = np.zeros(n_samples)
-
     beat_dur = 60.0 / bpm
     bar_dur  = beat_dur * 4
-
     chord_progression = preset["chords"]
-
     n_bars = max(1, int(math.ceil(duration / bar_dur)))
+
     for bar in range(n_bars):
         chord = chord_progression[bar % len(chord_progression)]
         start_sample = int(bar * bar_dur * sr)
-
-        # Warm sustained chord pad
         for semis in chord:
             freq = _note_freq(semis)
             tone = _sine(freq, bar_dur, sr, amp=0.10)
             tone *= _envelope(len(tone), attack=0.05, release=0.6)
             _mix(mix, tone, start_sample)
-
-        # Drum pattern across the 4 beats of this bar (kick/snare/hats)
         for beat in range(4):
             beat_sample = start_sample + int(beat * beat_dur * sr)
             if beat in (0, 2):
                 _mix(mix, _kick(sr) * preset["kick_amp"], beat_sample)
             if beat in (1, 3):
                 _mix(mix, _snare(sr) * preset["snare_amp"], beat_sample)
-            # lazy lofi hats on the off-beats
             _mix(mix, _hat(sr), beat_sample + int(beat_dur * sr * 0.5))
 
-    # Trim/pad to exact duration
     if len(mix) < n_samples:
         mix = np.pad(mix, (0, n_samples - len(mix)))
     mix = mix[:n_samples]
-
-    # Lofi warmth: lowpass filter + dusty vinyl crackle
     mix = _lowpass(mix, strength=0.6)
     mix += _vinyl_crackle(n_samples, amount=0.015)
-
-    # Normalize and convert to 16-bit PCM
     peak = np.max(np.abs(mix)) or 1.0
     mix = (mix / peak) * 0.85
     pcm = (mix * 32767).astype(np.int16)
@@ -338,16 +310,10 @@ def generate_lofi_beat(duration: float, path: str, mood: str = "chill",
         wf.setsampwidth(2)
         wf.setframerate(sr)
         wf.writeframes(pcm.tobytes())
-
     return path
 
 
 def setup_music(duration: float = 60.0, mood: str = "chill") -> bool:
-    """
-    Generate the background beat in pure Python — guaranteed to work,
-    no download, no flaky third-party server to beg for fire.
-    `mood` should be one of "chill", "dramatic", "upbeat" (see MOOD_PRESETS).
-    """
     try:
         print(f"  🎵 UGH! Smashing rocks together to make beat (mood: {mood})…")
         generate_lofi_beat(duration, MUSIC_PATH, mood=mood)
@@ -359,9 +325,10 @@ def setup_music(duration: float = 60.0, mood: str = "chill") -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# RSS FETCH  (identical logic to carousel version)
+# RSS FETCH & MULTI-IMAGE SCRAPER (ported from world version)
 # ─────────────────────────────────────────────────────────────────────────────
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; PHNewsBot/1.0)"}
+
 
 def strip_html(raw: str) -> str:
     return re.sub(r"<[^>]+>", "", unescape(raw)).strip()
@@ -369,6 +336,57 @@ def strip_html(raw: str) -> str:
 
 def _looks_like_image(url: str) -> bool:
     return bool(re.search(r'\.(jpg|jpeg|png|webp)(\?.*)?$', url, re.IGNORECASE))
+
+
+_LOGO_SKIP_PATTERNS = re.compile(
+    r'(logo|favicon|icon|sprite|brand|header|badge|avatar|watermark|placeholder|blank|spinner|loading|arrow|button|play|pause|search|menu|close|next|prev)',
+    re.IGNORECASE
+)
+
+
+def _is_article_image(url: str) -> bool:
+    return _looks_like_image(url) and not _LOGO_SKIP_PATTERNS.search(url)
+
+
+def scrape_all_article_images(article_url: str) -> list:
+    """Scrape article page for ALL relevant images, filtered for quality."""
+    urls = []
+    if not article_url:
+        return urls
+    try:
+        r = requests.get(article_url, headers=HEADERS, timeout=10, allow_redirects=True)
+        r.raise_for_status()
+        html = r.text
+
+        # 1. og:image first (usually high quality)
+        m = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
+        if not m:
+            m = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image["\']', html, re.IGNORECASE)
+        if m:
+            url = m.group(1).strip()
+            if _is_article_image(url):
+                urls.append(url)
+
+        # 2. All img tags
+        img_tags = re.findall(r'<img[^>]+src=["\']([^"\']+)["\']', html, re.IGNORECASE)
+        for img_url in img_tags:
+            if img_url.startswith('//'):
+                img_url = 'https:' + img_url
+            elif img_url.startswith('/'):
+                img_url = urljoin(article_url, img_url)
+            if _is_article_image(img_url) and img_url not in urls:
+                urls.append(img_url)
+
+        return urls[:8]
+    except Exception as e:
+        print(f"    ⚠️  Multi-image scrape failed for {article_url[:60]}: {e}")
+    return []
+
+
+def scrape_og_image(article_url: str) -> str:
+    """Fallback: return the first scraped image URL from the article page."""
+    imgs = scrape_all_article_images(article_url)
+    return imgs[0] if imgs else ""
 
 
 def extract_image_from_item(item, raw_xml_text: str = "") -> str:
@@ -380,32 +398,40 @@ def extract_image_from_item(item, raw_xml_text: str = "") -> str:
         el = item.find(tag)
         if el is not None:
             url = el.get("url", "")
-            if url and _looks_like_image(url):
+            if url and _is_article_image(url):
                 return url
+
     enc = item.find("enclosure")
     if enc is not None:
         url = enc.get("url", "")
         t   = enc.get("type", "")
-        if url and ("image" in t or _looks_like_image(url)):
+        if url and ("image" in t or _is_article_image(url)):
             return url
+
     desc_raw = item.findtext("description", "") or ""
     m = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', desc_raw, re.IGNORECASE)
     if m:
         url = m.group(1)
-        if _looks_like_image(url):
+        if _is_article_image(url):
             return url
-    if raw_xml_text:
+
+    try:
+        item_xml = ET.tostring(item, encoding="unicode")
+    except Exception:
+        item_xml = ""
+    if item_xml:
         matches = re.findall(
             r'https?://[^\s\'"<>]+\.(?:jpg|jpeg|png|webp)(?:\?[^\s\'"<>]*)?',
-            raw_xml_text, re.IGNORECASE
+            item_xml, re.IGNORECASE
         )
         for url in matches:
-            if "1x1" not in url and "pixel" not in url.lower():
+            if "1x1" not in url and "pixel" not in url.lower() and _is_article_image(url):
                 return url
+
     return ""
 
 
-def fetch_articles() -> list[dict]:
+def fetch_articles() -> list:
     articles = []
     for feed in FEEDS:
         try:
@@ -419,11 +445,13 @@ def fetch_articles() -> list[dict]:
                 link      = (item.findtext("link") or "").strip()
                 image_url = extract_image_from_item(item, raw_text)
                 if title and link and len(title) > 10:
+                    if not image_url:
+                        image_url = scrape_og_image(link)
                     articles.append({
-                        "title":    title,
-                        "desc":     desc[:800],
-                        "link":     link,
-                        "category": feed["category"],
+                        "title":     title,
+                        "desc":      desc[:800],
+                        "link":      link,
+                        "category":  feed["category"],
                         "image_url": image_url,
                     })
         except Exception as e:
@@ -432,40 +460,55 @@ def fetch_articles() -> list[dict]:
 
 
 def fetch_article_image(image_url: str):
-    """Download article photo as 1080×1920 PIL image (vertical crop)."""
+    """
+    Download article photo at NATIVE resolution.
+    Filters out tiny icons/UI elements by checking dimensions.
+    """
     if not image_url:
         return None
     try:
-        print(f"  📷 Fetching article image: {image_url[:80]}…")
+        print(f"  📷 Fetching image: {image_url[:80]}…")
         r = requests.get(image_url, headers=HEADERS, timeout=15)
         r.raise_for_status()
         img = Image.open(BytesIO(r.content)).convert("RGB")
-        # Crop to 9:16 aspect ratio
-        w, h    = img.size
-        target_ratio = IMG_W / IMG_H  # 9/16 = 0.5625
-        current_ratio = w / h
-        if current_ratio > target_ratio:
-            # image is wider than 9:16 — crop sides
-            new_w = int(h * target_ratio)
-            left  = (w - new_w) // 2
-            img   = img.crop((left, 0, left + new_w, h))
-        else:
-            # image is taller — crop top/bottom
-            new_h = int(w / target_ratio)
-            top   = (h - new_h) // 2
-            img   = img.crop((0, top, w, top + new_h))
-        img = img.resize((IMG_W, IMG_H), Image.LANCZOS)
-        print("  ✅ Article image loaded (1080×1920)!")
+        w, h = img.size
+        if w < 300 or h < 200:
+            print(f"  ⚠️ Image too small ({w}x{h}), likely an icon. Skipping.")
+            return None
+        print(f"  ✅ Image loaded at native size: {w}×{h}")
         return img
     except Exception as e:
-        print(f"  ⚠️  Could not fetch article image: {e}")
+        print(f"  ⚠️  Could not fetch image: {e}")
         return None
+
+
+def fetch_all_article_images(article: dict) -> list:
+    """
+    Fetches the main RSS image, then scrapes the article page for up to 8 images.
+    Returns a list of PIL Image objects (native resolution, no forced crop).
+    """
+    urls = []
+    if article.get("image_url"):
+        urls.append(article["image_url"])
+
+    scraped_urls = scrape_all_article_images(article["link"])
+    for u in scraped_urls:
+        if u not in urls:
+            urls.append(u)
+
+    images = []
+    for url in urls[:8]:
+        img = fetch_article_image(url)
+        if img:
+            images.append(img)
+
+    return images
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SLIDE CONTENT — Groq or fallback (8 slides for Reel)
 # ─────────────────────────────────────────────────────────────────────────────
-def generate_slides_groq(article: dict) -> list[str] | None:
+def generate_slides_groq(article: dict) -> list | None:
     prompt = f"""Ikaw ay isang Filipino social media content writer na katulad ng Peso Weekly.
 Gumawa ng nilalaman para sa 8-slide na Instagram REEL tungkol sa balitang ito:
 
@@ -475,15 +518,16 @@ KATEGORYA: {article['category']}
 
 PANUTO:
 - Sumulat sa Filipino / Taglish — casual, relatable, madaling intindihin
-- MAIKLI lang ang bawat slide (max 20 salita) — kailangan mabasa agad sa video
-- Slide 1: Grabbing hook headline — dramatic, curiosity-inducing, ALL CAPS feel
-- Slide 2: Simpleng paliwanag — ano nangyari?
-- Slide 3: Mahalagang detalye o numero
-- Slide 4: Isa pang key point o konteksto
-- Slide 5: Bakit ito mahalaga sa ordinary na Pilipino?
-- Slide 6: Pro tip o advice para sa mambabasa
-- Slide 7: Sa madaling salita — isang pangungusap na buod
-- Slide 8: CTA — "I-follow kami para sa ganito pang balita araw-araw!"
+- Slide 1 (Hook): Grabbing headline — dramatic, curiosity-inducing. Walang limit sa haba. Ito ang TITLE.
+- Slide 2 (Ano Nangyari?): Simpleng paliwanag — ano nangyari? STRICTLY MAX 120 CHARACTERS.
+- Slide 3 (Mga Detalye): Mahalagang detalye o numero. STRICTLY MAX 120 CHARACTERS.
+- Slide 4 (Tandaan Ito): Isa pang key point o konteksto. STRICTLY MAX 120 CHARACTERS.
+- Slide 5 (Bakit Mahalaga?): Bakit ito mahalaga sa ordinary na Pilipino? STRICTLY MAX 120 CHARACTERS.
+- Slide 6 (Pro Tip): Pro tip o advice para sa mambabasa. STRICTLY MAX 120 CHARACTERS.
+- Slide 7 (Sa Madaling Salita): Isang pangungusap na buod. STRICTLY MAX 120 CHARACTERS.
+- Slide 8 (CTA): "I-follow kami para sa ganito pang balita araw-araw!" — walang limit.
+
+MAHALAGA: Para sa slides 2–7, STRICT na 120 characters o mas kaunti. Gamitin ang bawat character — maging informative hangga't maaari.
 
 I-format ang sagot bilang JSON array lamang (walang ibang text):
 [
@@ -519,38 +563,49 @@ I-format ang sagot bilang JSON array lamang (walang ibang text):
     return None
 
 
-def generate_slides_fallback(article: dict) -> list[str]:
+def _truncate(text: str, max_chars: int = 120) -> str:
+    """Truncate text to max_chars at a word boundary."""
+    if len(text) <= max_chars:
+        return text
+    truncated = text[:max_chars].rsplit(" ", 1)[0]
+    return truncated.rstrip(".,!?") + "."
+
+
+def generate_slides_fallback(article: dict) -> list:
     title     = article["title"]
     desc      = article["desc"]
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", desc) if len(s.strip()) > 20]
     def gs(i, default): return sentences[i] if i < len(sentences) else default
     return [
         title,
-        gs(0, "Alamin ang buong kwento sa mga susunod na slide."),
-        gs(1, "Isa ito sa mga pinakamahalagang balita ngayon."),
-        gs(2, "Patuloy na sinusundan ng mga Pilipino ang isyung ito."),
-        "Nakakaapekto ito sa ating pang-araw-araw na buhay bilang mga Pilipino.",
-        "Manatiling updated — sundan ang mga opisyal na pahayag.",
-        f"Isa sa mga pangunahing balita ngayon sa {article['category']}.",
+        _truncate(gs(0, "Alamin ang buong kwento sa mga susunod na slide.")),
+        _truncate(gs(1, "Isa ito sa mga pinakamahalagang balita ngayon.")),
+        _truncate(gs(2, "Patuloy na sinusundan ng mga Pilipino ang isyung ito.")),
+        _truncate("Nakakaapekto ito sa ating pang-araw-araw na buhay bilang mga Pilipino."),
+        _truncate("Manatiling updated — sundan ang mga opisyal na pahayag."),
+        _truncate(f"Isa sa mga pangunahing balita ngayon sa {article['category']}."),
         f"I-follow ang @{PAGE_NAME} para sa pinaka-updated na balita araw-araw! 🔥",
     ]
 
 
-def generate_slides(article: dict) -> list[str]:
+def generate_slides(article: dict) -> list:
     if GROQ_API_KEY:
         print("  🤖 Generating content with Groq (Llama 3)…")
         texts = generate_slides_groq(article)
         if texts and len(texts) >= 6:
-            # pad to 8 if Groq returned fewer
             while len(texts) < 8:
                 texts.append(f"I-follow ang @{PAGE_NAME} para sa pinaka-updated na balita! 🔥")
-            return texts[:8]
+            texts = texts[:8]
+            # Enforce 120-char cap on content slides (2–7), skip title (0) and CTA (7)
+            for i in range(1, 7):
+                texts[i] = _truncate(texts[i], max_chars=120)
+            return texts
     print("  ✍️  Using text extraction fallback…")
     return generate_slides_fallback(article)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# SLIDE IMAGE GENERATION — 1080×1920 vertical
+# SLIDE IMAGE GENERATION — 1080×1920 vertical (world-version layout)
 # ─────────────────────────────────────────────────────────────────────────────
 def draw_rounded_rect(draw, x0, y0, x1, y1, r, fill):
     draw.rectangle([x0 + r, y0, x1 - r, y1], fill=fill)
@@ -588,49 +643,73 @@ def fit_text(draw, text: str, font_size: int, max_w: int, max_lines: int, bold=T
     return get_font(32, bold=bold), lines
 
 
-def make_bg(photo, accent: tuple, blur: int = 10, darkness: float = 0.55):
-    """Return 1080×1920 background."""
-    if photo:
-        bg = photo.copy()
-        bg = bg.filter(ImageFilter.GaussianBlur(radius=blur))
-        enhancer = ImageEnhance.Brightness(bg)
-        bg = enhancer.enhance(1 - darkness)
-        tint = Image.new("RGB", (IMG_W, IMG_H), accent)
-        bg   = Image.blend(bg, tint, alpha=0.18)
-        return bg
-    else:
-        bg   = Image.new("RGB", (IMG_W, IMG_H), BG_DARK)
-        draw = ImageDraw.Draw(bg)
-        for y in range(IMG_H):
-            alpha = int(30 * (1 - y / IMG_H))
-            r_c   = min(255, BG_DARK[0] + accent[0] * alpha // 255)
-            g_c   = min(255, BG_DARK[1] + accent[1] * alpha // 255)
-            b_c   = min(255, BG_DARK[2] + accent[2] * alpha // 255)
-            draw.line([(0, y), (IMG_W, y)], fill=(r_c, g_c, b_c))
-        return bg
+def crop_needed_size(img: Image.Image, target_w: int, target_h: int,
+                     centering_y: float = 0.35) -> Image.Image:
+    """Fill entire target size by maintaining aspect ratio and cropping. For blurred bg."""
+    src_w, src_h = img.size
+    scale = max(target_w / src_w, target_h / src_h)
+    new_w = int(src_w * scale)
+    new_h = int(src_h * scale)
+    img_resized = img.resize((new_w, new_h), Image.LANCZOS)
+    crop_x = int((new_w - target_w) * 0.5)
+    crop_y = int((new_h - target_h) * centering_y)
+    crop_y = max(0, min(crop_y, new_h - target_h))
+    return img_resized.crop((crop_x, crop_y, crop_x + target_w, crop_y + target_h))
+
+
+def create_blurred_bg_and_fg(img: Image.Image, target_w: int, target_h: int):
+    """
+    Creates a blurred background that fills the screen, and a sharp
+    foreground image that fits natively without upscaling.
+    Returns (bg_image, fg_image, fg_w, fg_h)
+    """
+    # 1. Blurred Background
+    bg = crop_needed_size(img, target_w, target_h)
+    bg = bg.filter(ImageFilter.GaussianBlur(radius=35))
+    bg = ImageEnhance.Brightness(bg).enhance(0.45)
+
+    # 2. Sharp Foreground (Made Much Bigger)
+    src_w, src_h = img.size
+    max_w = target_w - 80          # small margin on sides
+    max_h = int(target_h * 0.65)   # up to 65% of screen height
+
+    scale = min(max_w / src_w, max_h / src_h)
+    if scale > 1.2:
+        scale = 1.2  # cap upscaling to avoid blur on tiny source images
+
+    new_w = int(src_w * scale)
+    new_h = int(src_h * scale)
+    fg = img.resize((new_w, new_h), Image.LANCZOS)
+    fg = fg.filter(ImageFilter.UnsharpMask(radius=1.2, percent=120, threshold=3))
+
+    return bg, fg, new_w, new_h
 
 
 def create_slide(text: str, idx: int, total: int, category: str,
-                 article_photo=None) -> Image.Image:
-    """Draw a single 1080×1920 slide image."""
+                 article_photos=None) -> Image.Image:
+    """Draw a single 1080×1920 slide image — world-version layout."""
     cat    = CATEGORIES.get(category, CATEGORIES["BALITA"])
     accent = cat["rgb"]
     emoji  = cat["emoji"]
 
     is_hook = idx == 0
     is_cta  = idx == total - 1
-    use_photo = article_photo and not is_cta
 
-    bg   = make_bg(article_photo if use_photo else None, accent,
-                   blur=10 if is_hook else 16,
-                   darkness=0.45 if is_hook else 0.65)
-    img  = bg.copy()
+    # Pick the photo for this specific slide. Cycles through available photos.
+    current_photo = None
+    if article_photos:
+        current_photo = article_photos[idx % len(article_photos)]
+
+    use_photo = current_photo is not None and not is_cta
+
+    # Start with a dark base
+    img  = Image.new("RGB", (IMG_W, IMG_H), BG_DARK)
     draw = ImageDraw.Draw(img)
 
     # ── Top accent stripe
     draw.rectangle([(0, 0), (IMG_W, 14)], fill=accent)
 
-    # ── Category pill (top-left)
+    # ── Category pill (top-left) — with emoji, PH style
     pill_font = get_font(34)
     pill_text = f"{emoji}  {category}"
     pill_bbox = draw.textbbox((0, 0), pill_text, font=pill_font)
@@ -645,123 +724,157 @@ def create_slide(text: str, idx: int, total: int, category: str,
     draw.text((IMG_W - 64, 58), f"{idx+1}/{total}",
               font=ctr_font, anchor="rm", fill=C_GRAY)
 
-    # ── HOOK SLIDE
-    if is_hook:
-        overlay  = Image.new("RGBA", (IMG_W, IMG_H), (0, 0, 0, 170))
-        img_rgba = img.convert("RGBA")
-        img_rgba.alpha_composite(overlay)
-        img  = img_rgba.convert("RGB")
-        draw = ImageDraw.Draw(img)
+    # ── HOOK & CONTENT SLIDES (Unified Clean Layout from world version)
+    if not is_cta:
+        if use_photo:
+            # Blurred background + sharp foreground photo at top
+            bg_photo, fg_photo, fg_w, fg_h = create_blurred_bg_and_fg(current_photo, IMG_W, IMG_H)
+            img.paste(bg_photo, (0, 0))
 
-        # Reapply pill on top of overlay
+            paste_x = (IMG_W - fg_w) // 2
+            paste_y = 100
+            img.paste(fg_photo, (paste_x, paste_y))
+
+            # Clean gradient overlay for text readability
+            overlay = Image.new("RGBA", (IMG_W, IMG_H), (0, 0, 0, 0))
+            od = ImageDraw.Draw(overlay)
+            for y in range(IMG_H):
+                alpha = int(230 * (y / IMG_H) ** 1.2)
+                if 700 < y < 1100:
+                    alpha += 70
+                alpha = min(255, alpha)
+                od.line([(0, y), (IMG_W, y)], fill=(0, 0, 0, alpha))
+            img_rgba = img.convert("RGBA")
+            img_rgba.alpha_composite(overlay)
+            img = img_rgba.convert("RGB")
+            draw = ImageDraw.Draw(img)
+
+        else:
+            # No photo: simple dark gradient
+            overlay = Image.new("RGBA", (IMG_W, IMG_H), (0, 0, 0, 0))
+            od = ImageDraw.Draw(overlay)
+            for y in range(IMG_H):
+                alpha = int(140 * (y / IMG_H))
+                od.line([(0, y), (IMG_W, y)], fill=(0, 0, 0, alpha))
+            img_rgba = img.convert("RGBA")
+            img_rgba.alpha_composite(overlay)
+            img = img_rgba.convert("RGB")
+            draw = ImageDraw.Draw(img)
+
+        # Reapply pill + counter on top of everything
         draw_rounded_rect(draw, px, py, px + pw, py + ph, 12, accent)
         draw.text((px + 22, py + 12), pill_text, font=pill_font, fill=C_WHITE)
         draw.text((IMG_W - 64, 58), f"{idx+1}/{total}",
                   font=ctr_font, anchor="rm", fill=C_GRAY)
 
-        # Big centred headline — vertically centred in the tall canvas
-        font, lines = fit_text(draw, text.upper(), 88, IMG_W - 112, 6)
-        fs   = font.size
-        lh   = fs + 18
-        th   = len(lines) * lh
-        y    = (IMG_H - th) // 2
-        for line in lines:
-            bx = draw.textbbox((0, 0), line, font=font)[2]
-            x  = (IMG_W - bx) // 2
-            draw_text_shadow(draw, (x, y), line, font, C_WHITE, shadow_offset=5)
-            y += lh
-        draw.rectangle([(IMG_W//2 - 90, y + 28), (IMG_W//2 + 90, y + 36)], fill=accent)
+        pad   = 64
+        max_w = IMG_W - pad * 2
 
-        # "SWIPE UP" nudge at bottom
-        nudge_font = get_font(32, bold=False)
-        draw.text((IMG_W // 2, IMG_H - 130), "👆 I-swipe para sa buong kwento",
-                  font=nudge_font, anchor="mm", fill=C_GRAY)
+        # ── HOOK SLIDE: Two-tone split text, vertically centered
+        if is_hook:
+            words = text.split()
+            mid   = max(1, len(words) // 2)
+            line1_text = " ".join(words[:mid])
+            line2_text = " ".join(words[mid:])
 
-    # ── CTA SLIDE
-    elif is_cta:
-        # Dark overlay for CTA
+            font_h, _ = fit_text(draw, text, 76, max_w, 6)
+            fs = font_h.size
+            lh = fs + 20
+
+            all_lines = []
+            for chunk, colour in [(line1_text, accent), (line2_text, C_WHITE)]:
+                if not chunk.strip():
+                    continue
+                _, chunk_lines = fit_text(draw, chunk.upper(), fs, max_w, 3)
+                all_lines.extend([(l, colour) for l in chunk_lines])
+
+            total_text_h = len(all_lines) * lh
+            y = ((IMG_H - 90) // 2) - ((total_text_h + 40) // 2)
+
+            for line_txt, line_col in all_lines:
+                bx = draw.textbbox((0, 0), line_txt, font=font_h)[2]
+                x  = (IMG_W - bx) // 2
+                draw_text_shadow(draw, (x, y), line_txt, font_h, line_col,
+                                 shadow_offset=5, shadow_color=(0, 0, 0, 220))
+                y += lh
+
+            # Thin accent divider line below text
+            draw.rectangle([(IMG_W//2 - 100, y + 18), (IMG_W//2 + 100, y + 25)], fill=accent)
+
+            # Filipino swipe nudge at bottom
+            nudge_font = get_font(32, bold=False)
+            draw.text((IMG_W // 2, IMG_H - 130), "👆 I-swipe para sa buong kwento",
+                      font=nudge_font, anchor="mm", fill=C_GRAY)
+
+        # ── CONTENT SLIDES: Centered label + two-tone centered body text
+        else:
+            label = SLIDE_LABELS[idx] if idx < len(SLIDE_LABELS) else ""
+            font, lines = fit_text(draw, text, 64, max_w, 6)
+            fs = font.size
+            lh = fs + 24
+            th = len(lines) * lh
+
+            label_h = 80 if label else 0
+            ty = ((IMG_H - 90) // 2) - ((th + label_h) // 2) + label_h
+
+            # Draw Label centered above text
+            if label:
+                lbl_font = get_font(36)
+                lbl_bbox = draw.textbbox((0, 0), label, font=lbl_font)
+                lbl_w = lbl_bbox[2]
+                lbl_x = (IMG_W - lbl_w) // 2
+                lbl_y = ty - 80
+                draw.text((lbl_x, lbl_y), label, font=lbl_font, fill=accent)
+                draw.rectangle([(lbl_x, lbl_y + lbl_bbox[3] + 6),
+                                 (lbl_x + lbl_w, lbl_y + lbl_bbox[3] + 12)], fill=accent)
+
+            # Draw body text — centered, two-tone (first line accent, rest white)
+            for i, line in enumerate(lines):
+                colour = accent if i == 0 else C_WHITE
+                bx = draw.textbbox((0, 0), line, font=font)[2]
+                x  = (IMG_W - bx) // 2
+                draw_text_shadow(draw, (x, ty), line, font, colour,
+                                 shadow_offset=4, shadow_color=(0, 0, 0, 200))
+                ty += lh
+
+    # ── CTA SLIDE — Instagram-adapted from world version
+    else:
         overlay  = Image.new("RGBA", (IMG_W, IMG_H), (0, 0, 0, 120))
         img_rgba = img.convert("RGBA")
         img_rgba.alpha_composite(overlay)
         img  = img_rgba.convert("RGB")
         draw = ImageDraw.Draw(img)
 
-        # Centred CTA block — pushed slightly above centre on tall canvas
         centre_y = IMG_H // 2 - 60
 
-        e_font = get_font(160)
-        draw.text((IMG_W // 2, centre_y - 160), "🔥", font=e_font, anchor="mm")
+        # Sunburst / star graphic
+        star_cx, star_cy = IMG_W // 2, centre_y - 130
+        for _angle in range(0, 360, 20):
+            _r_inner = 38
+            _r_outer = 82
+            _x1 = star_cx + int(_r_inner * math.cos(math.radians(_angle)))
+            _y1 = star_cy + int(_r_inner * math.sin(math.radians(_angle)))
+            _x2 = star_cx + int(_r_outer * math.cos(math.radians(_angle + 10)))
+            _y2 = star_cy + int(_r_outer * math.sin(math.radians(_angle + 10)))
+            draw.line([(_x1, _y1), (_x2, _y2)], fill=accent, width=7)
+        draw.ellipse([(star_cx - 30, star_cy - 30), (star_cx + 30, star_cy + 30)], fill=accent)
 
-        draw.text((IMG_W // 2, centre_y + 60), "I-FOLLOW ANG",
-                  font=get_font(44, bold=False), anchor="mm", fill=C_GRAY)
-        draw.text((IMG_W // 2, centre_y + 150), f"@{PAGE_NAME}",
-                  font=get_font(76), anchor="mm", fill=C_WHITE)
-        draw.text((IMG_W // 2, centre_y + 260),
+        draw.text((IMG_W // 2, centre_y + 50), "FOLLOW US ON INSTAGRAM",
+                  font=get_font(40, bold=False), anchor="mm", fill=C_GRAY)
+        draw.text((IMG_W // 2, centre_y + 155), f"@{PAGE_NAME}",
+                  font=get_font(84), anchor="mm", fill=C_WHITE)
+        draw.text((IMG_W // 2, centre_y + 265),
                   "Para sa pinaka-updated na balita! 📲",
-                  font=get_font(38, bold=False), anchor="mm", fill=C_GRAY)
+                  font=get_font(40, bold=False), anchor="mm", fill=accent)
         draw.rectangle([(200, centre_y + 330), (IMG_W - 200, centre_y + 338)], fill=accent)
-        draw.text((IMG_W // 2, centre_y + 390), "Libre naman. I-follow na! 😄",
+        draw.text((IMG_W // 2, centre_y + 395), "Libre naman — I-follow na! 😄",
+                  font=get_font(38, bold=False), anchor="mm", fill=C_GRAY)
+        draw.text((IMG_W // 2, centre_y + 460), "I-share sa iyong mga kaibigan! 📤",
                   font=get_font(34, bold=False), anchor="mm", fill=C_GRAY)
 
-        # DM-share nudge
         draw.text((IMG_W // 2, IMG_H - 130),
                   "📤 I-share sa iyong mga kaibigan!",
                   font=get_font(32, bold=False), anchor="mm", fill=C_GRAY)
-
-    # ── CONTENT SLIDES
-    else:
-        label = SLIDE_LABELS[idx] if idx < len(SLIDE_LABELS) else ""
-
-        if use_photo:
-            card_top = 150
-            card_bot = IMG_H - 120
-            card_img = Image.new("RGBA", (IMG_W, IMG_H), (0, 0, 0, 0))
-            card_d   = ImageDraw.Draw(card_img)
-            card_d.rectangle([(48, card_top), (IMG_W - 48, card_bot)],
-                              fill=(13, 17, 28, 185))
-            img_rgba = img.convert("RGBA")
-            img_rgba.alpha_composite(card_img)
-            img  = img_rgba.convert("RGB")
-            draw = ImageDraw.Draw(img)
-
-        # Reapply pill + counter (may have been overwritten by card)
-        draw_rounded_rect(draw, px, py, px + pw, py + ph, 12, accent)
-        draw.text((px + 22, py + 12), pill_text, font=pill_font, fill=C_WHITE)
-        draw.text((IMG_W - 64, 58), f"{idx+1}/{total}",
-                  font=ctr_font, anchor="rm", fill=C_GRAY)
-
-        # Label
-        if label:
-            lbl_font = get_font(40)
-            lbl_bbox = draw.textbbox((0, 0), label, font=lbl_font)
-            lbl_w    = lbl_bbox[2]
-            lbl_x    = (IMG_W - lbl_w) // 2
-            lbl_y    = 170
-            draw.text((lbl_x, lbl_y), label, font=lbl_font, fill=accent)
-            draw.rectangle([(lbl_x, lbl_y + lbl_bbox[3] + 8),
-                             (lbl_x + lbl_w, lbl_y + lbl_bbox[3] + 14)], fill=accent)
-
-        # Body text — centred vertically in the taller canvas
-        pad   = 80
-        max_w = IMG_W - pad * 2
-        font, lines = fit_text(draw, text, 72, max_w, 8)
-        fs    = font.size
-        lh    = fs + 24
-        th    = len(lines) * lh
-        # Push text to centre of remaining space below label
-        content_top = 280 if label else 200
-        content_bot = IMG_H - 180
-        y = content_top + max(0, (content_bot - content_top - th) // 2)
-
-        for i, line in enumerate(lines):
-            colour = accent if i == 0 else C_WHITE
-            draw_text_shadow(draw, (pad, y), line, font, colour, shadow_offset=3)
-            y += lh
-
-        # Accent left border
-        bar_top    = content_top + max(0, (content_bot - content_top - th) // 2) - 8
-        bar_bottom = bar_top + th + 8
-        draw.rectangle([(40, bar_top), (48, bar_bottom)], fill=accent)
 
     # ── Bottom branding bar
     draw.rectangle([(0, IMG_H - 90), (IMG_W, IMG_H)], fill=BG_CARD)
@@ -778,10 +891,6 @@ def create_slide(text: str, idx: int, total: int, category: str,
 # ─────────────────────────────────────────────────────────────────────────────
 def make_ken_burns_clip(pil_img: Image.Image, duration: float,
                         zoom_in: bool = True, fps: int = FPS):
-    """
-    Convert a PIL image into a moviepy clip with a slow Ken Burns zoom.
-    Alternates between zoom-in and zoom-out for visual variety.
-    """
     img_array = np.array(pil_img)
     h, w      = img_array.shape[:2]
     zoom_start = 1.0
@@ -793,26 +902,17 @@ def make_ken_burns_clip(pil_img: Image.Image, duration: float,
     def make_frame(t):
         progress = t / duration
         scale    = zoom_start + (zoom_end - zoom_start) * progress
-
-        # Compute cropped region size
         crop_w = int(w / scale)
         crop_h = int(h / scale)
-
-        # Pan: drift slightly from centre for parallax feel
         offset_x = int((w - crop_w) * 0.5)
         offset_y = int((h - crop_h) * 0.5)
-
-        # Slightly shift the anchor based on zoom direction
         if zoom_in:
             offset_x += int((w - crop_w) * 0.1 * progress)
         else:
             offset_x += int((w - crop_w) * 0.1 * (1 - progress))
-
         offset_x = max(0, min(offset_x, w - crop_w))
         offset_y = max(0, min(offset_y, h - crop_h))
-
         cropped = img_array[offset_y:offset_y + crop_h, offset_x:offset_x + crop_w]
-        # Resize back to original dimensions using PIL for quality
         cropped_pil = Image.fromarray(cropped).resize((w, h), Image.LANCZOS)
         return np.array(cropped_pil)
 
@@ -823,45 +923,29 @@ def make_ken_burns_clip(pil_img: Image.Image, duration: float,
 # VIDEO ASSEMBLY
 # ─────────────────────────────────────────────────────────────────────────────
 def build_reel(images: list, output_path: str, has_music: bool) -> str:
-    """
-    Stitch PIL images into a vertical MP4 Reel with:
-    - Ken Burns zoom per slide
-    - Crossfade transitions
-    - Optional background music
-    Returns path to the output MP4.
-    """
     print(f"\n🎬 Assembling {len(images)} slides into video…")
 
     clips = []
     for i, pil_img in enumerate(images):
-        zoom_in = (i % 2 == 0)   # alternate zoom direction each slide
+        zoom_in = (i % 2 == 0)
         clip    = make_ken_burns_clip(pil_img, SLIDE_DURATION, zoom_in=zoom_in)
         clip    = clip.set_fps(FPS)
-
-        # Crossfade: fade out at end of each clip
         if i > 0:
             clip = clip.crossfadein(FADE_DURATION)
-
         clips.append(clip)
         print(f"   Slide {i+1}/{len(images)} animated ✓")
 
-    # Concatenate with crossfade padding
-    video = concatenate_videoclips(clips, method="compose",
-                                   padding=-FADE_DURATION)
+    video = concatenate_videoclips(clips, method="compose", padding=-FADE_DURATION)
 
-    # ── Background music
     if has_music and os.path.exists(MUSIC_PATH):
         try:
             print("  🎵 Mixing background music…")
-            audio       = AudioFileClip(MUSIC_PATH)
-            total_dur   = video.duration
-
-            # Loop or trim music to match video length
+            audio     = AudioFileClip(MUSIC_PATH)
+            total_dur = video.duration
             if audio.duration < total_dur:
                 loops_needed = math.ceil(total_dur / audio.duration)
                 from moviepy.editor import concatenate_audioclips
                 audio = concatenate_audioclips([audio] * loops_needed)
-
             audio = audio.subclip(0, total_dur)
             audio = audio.volumex(MUSIC_VOLUME)
             video = video.set_audio(audio)
@@ -869,16 +953,15 @@ def build_reel(images: list, output_path: str, has_music: bool) -> str:
         except Exception as e:
             print(f"  ⚠️  Music mix failed: {e} — continuing without audio.")
 
-    # ── Render
     print(f"\n🎞️  Rendering MP4 → {output_path}  (this takes ~30-60 seconds)…")
     video.write_videofile(
         output_path,
         fps=FPS,
         codec="libx264",
         audio_codec="aac",
-        preset="fast",
-        ffmpeg_params=["-crf", "23", "-pix_fmt", "yuv420p"],
-        logger=None,   # suppress verbose moviepy output
+        preset="medium",   # Better quality (same as world version)
+        ffmpeg_params=["-crf", "20", "-pix_fmt", "yuv420p"],  # Lower CRF = less pixelation
+        logger=None,
     )
     print(f"  ✅ Video rendered! Size: {os.path.getsize(output_path) / 1024 / 1024:.1f} MB")
     return output_path
@@ -886,12 +969,8 @@ def build_reel(images: list, output_path: str, has_music: bool) -> str:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # VIDEO UPLOAD (throwaway GitHub Release asset — public direct-download URL)
-# We upload to a temporary file host that returns a public URL for the IG API.
-# Strategy: create a release, attach the MP4 as an asset, grab its
-# browser_download_url, then delete the release once IG has the video.
 # ─────────────────────────────────────────────────────────────────────────────
 def create_github_release(tag: str, repo: str, token: str) -> dict:
-    """Create a new (non-draft) GitHub release to attach the video asset to."""
     r = requests.post(
         f"https://api.github.com/repos/{repo}/releases",
         headers={
@@ -914,14 +993,10 @@ def create_github_release(tag: str, repo: str, token: str) -> dict:
 
 
 def upload_asset_to_release(upload_url: str, video_path: str, token: str) -> str:
-    """Upload the MP4 as a release asset. Returns the public browser_download_url."""
-    # upload_url comes back like ".../assets{?name,label}" — strip the template part
     upload_url = upload_url.split("{")[0]
     filename = os.path.basename(video_path)
-
     with open(video_path, "rb") as f:
         data = f.read()
-
     r = requests.post(
         upload_url,
         headers={
@@ -940,7 +1015,6 @@ def upload_asset_to_release(upload_url: str, video_path: str, token: str) -> str
 
 
 def delete_github_release(release_id: int, repo: str, token: str) -> None:
-    """Best-effort cleanup — delete the release after IG has fetched the video."""
     try:
         requests.delete(
             f"https://api.github.com/repos/{repo}/releases/{release_id}",
@@ -948,21 +1022,10 @@ def delete_github_release(release_id: int, repo: str, token: str) -> None:
             timeout=30,
         )
     except Exception as e:
-        print(f"  ⚠️  Could not clean up release: {e} (not fatal — delete manually if you like)")
+        print(f"  ⚠️  Could not clean up release: {e} (not fatal)")
 
 
 def upload_video_to_github_release(video_path: str) -> tuple:
-    """
-    Upload the MP4 as an asset on a throwaway GitHub Release in this repo.
-    Returns (public_url, release_id) — release_id lets the caller clean up
-    after Instagram has finished pulling the video.
-
-    Requires:
-      GITHUB_TOKEN       — auto-provided by Actions (needs 'contents: write' permission)
-      GITHUB_REPOSITORY  — auto-provided by Actions, e.g. "owner/repo"
-    NOTE: the repo must be PUBLIC — Instagram's servers fetch the asset URL
-    without any auth header, and private-repo release assets require auth to download.
-    """
     repo  = os.environ["GITHUB_REPOSITORY"]
     token = GH_RELEASE_TOKEN
     if not token:
@@ -1006,7 +1069,6 @@ def ig_get(path: str, **params) -> dict:
 
 
 def wait_for_container(cid: str, retries: int = 24, interval: int = 10):
-    """Poll until the media container is FINISHED (video takes longer than images)."""
     for attempt in range(retries):
         status = ig_get(cid, fields="status_code").get("status_code", "")
         print(f"    Container {cid}: {status}  (attempt {attempt+1}/{retries})")
@@ -1019,16 +1081,12 @@ def wait_for_container(cid: str, retries: int = 24, interval: int = 10):
 
 
 def upload_reel_container(video_url: str, caption: str) -> str:
-    """
-    Create a Reel media container via the Instagram Graph API.
-    media_type=REELS tells Instagram this is a Reel, not a feed video.
-    """
     data = ig_post(
         f"{IG_USER_ID}/media",
         media_type="REELS",
         video_url=video_url,
         caption=caption,
-        share_to_feed="true",      # also show in grid, not just Reels tab
+        share_to_feed="true",
     )
     return data["id"]
 
@@ -1070,20 +1128,17 @@ def build_caption(article: dict) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
     print("=" * 60)
-    print("  🎬 PH News Instagram REEL Bot — Animated Video Edition")
+    print("  🎬 PH News Instagram REEL Bot — Upgraded Layout Edition")
     print("=" * 60)
 
-    # ── Check moviepy
     if not MOVIEPY_OK:
         print("❌ moviepy is not installed!")
         print("   Run: pip install moviepy numpy")
         sys.exit(1)
 
-    # ── Fonts
     print("\n📦 Setting up fonts…")
     setup_fonts()
 
-    # ── Fetch articles
     print("\n📰 Fetching articles from RSS feeds…")
     articles = fetch_articles()
     if not articles:
@@ -1091,7 +1146,6 @@ def main():
         sys.exit(1)
     print(f"   Found {len(articles)} articles across all feeds.")
 
-    # ── Pick one (prefer articles with images)
     articles_with_img    = [a for a in articles if a.get("image_url")]
     articles_without_img = [a for a in articles if not a.get("image_url")]
     if articles_with_img:
@@ -1105,61 +1159,51 @@ def main():
     print(f"   Category  : {article['category']}")
     print(f"   Title     : {article['title'][:80]}")
     print(f"   Link      : {article['link']}")
-    print(f"   Image URL : {article.get('image_url', 'none')[:80] or 'none'}")
 
-    # ── Music — generated now, matched to this article's category mood
     mood = CATEGORY_MOOD.get(article["category"], "chill")
     print(f"\n🎵 Setting up background beat (category {article['category']} → mood '{mood}')…")
     est_duration = len(SLIDE_LABELS) * SLIDE_DURATION + 2.0
     has_music = setup_music(duration=est_duration, mood=mood)
 
-    # ── Download article image (vertical crop)
-    print("\n📷 Fetching article photo…")
-    article_photo = fetch_article_image(article.get("image_url", ""))
-    if not article_photo:
-        print("   ℹ️  No article photo — slides use the dark branded background.")
+    print("\n📷 Fetching all article photos (up to 8)…")
+    article_photos = fetch_all_article_images(article)
+    if not article_photos:
+        print("   ℹ️  No article photos — slides use the dark branded background.")
+    else:
+        print(f"   ✅ Successfully fetched {len(article_photos)} photos for the video.")
 
-    # ── Generate slide texts (8 slides)
     print("\n✍️  Generating slide content…")
     slide_texts = generate_slides(article)
     for i, t in enumerate(slide_texts):
         print(f"   Slide {i+1}: {t[:60]}…")
 
-    # ── Create slide images (1080×1920)
     print("\n🎨 Creating slide images (1080×1920)…")
     images = []
     for i, text in enumerate(slide_texts):
         img = create_slide(text, i, len(slide_texts), article["category"],
-                           article_photo=article_photo)
+                           article_photos=article_photos)
         images.append(img)
         print(f"   Slide {i+1}/{len(slide_texts)} ✓")
 
-    # ── Build animated video
     output_path = "/tmp/ph_news_reel.mp4"
     build_reel(images, output_path, has_music)
 
-    # ── Upload video to a throwaway GitHub Release
     print("\n☁️  Uploading video…")
     video_url, release_id = upload_video_to_github_release(output_path)
 
-    # ── Build caption
     caption = build_caption(article)
 
-    # ── Create Reel container on Instagram
     print("\n📱 Creating Instagram Reel container…")
     reel_id = upload_reel_container(video_url, caption)
     print(f"   Reel container ID: {reel_id}")
 
-    # ── Wait for Instagram to process the video (takes longer than images)
     print("\n⏳ Waiting for Reel to process (video takes ~1-3 min)…")
     wait_for_container(reel_id, retries=24, interval=10)
 
-    # ── Publish!
     print("\n🚀 Publishing Reel to Instagram…")
     post_id = publish_media(reel_id)
     print(f"\n✅ SUCCESS! Reel ID: {post_id}")
 
-    # ── Post comments
     time.sleep(5)
     print("\n💬 Posting comments…")
     try:
@@ -1179,7 +1223,6 @@ def main():
     print("\n🔥 Salamat! Mabuhay ang automation! 🇵🇭")
     print("=" * 60)
 
-    # ── Clean up the throwaway release/asset now that IG has the video
     print("\n🧹 Cleaning up temporary GitHub release…")
     delete_github_release(release_id, os.environ["GITHUB_REPOSITORY"], GH_RELEASE_TOKEN)
 
