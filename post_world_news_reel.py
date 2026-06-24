@@ -731,9 +731,9 @@ def create_slide(text: str, idx: int, total: int, category: str,
             bg_photo, fg_photo, fg_w, fg_h = create_blurred_bg_and_fg(current_photo, IMG_W, IMG_H)
             img.paste(bg_photo, (0, 0))
             
-            # Paste sharp foreground image at top, horizontally centered
+            # Paste sharp foreground image at CENTER, horizontally and vertically centered
             paste_x = (IMG_W - fg_w) // 2
-            paste_y = 100
+            paste_y = (IMG_H - fg_h) // 2
             img.paste(fg_photo, (paste_x, paste_y))
             
             # Apply clean gradient overlay for text readability
@@ -742,9 +742,9 @@ def create_slide(text: str, idx: int, total: int, category: str,
             for y in range(IMG_H):
                 # Base gradient from top to bottom
                 alpha = int(230 * (y / IMG_H) ** 1.2)
-                # Add extra darkness in the center (700px to 1100px) where text sits
-                if 700 < y < 1100:
-                    alpha += 70
+                # Add heavy extra darkness in the center (700px to 1200px) where text sits over the image
+                if 700 < y < 1200:
+                    alpha += 110
                 alpha = min(255, alpha)
                 od.line([(0, y), (IMG_W, y)], fill=(0, 0, 0, alpha))
             img_rgba = img.convert("RGBA")
