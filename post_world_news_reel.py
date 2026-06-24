@@ -515,7 +515,8 @@ def fetch_all_article_images(article: dict) -> list[Image.Image]:
 # SLIDE CONTENT — Groq or fallback (8 slides for Reel)
 # ─────────────────────────────────────────────────────────────────────────────
 def generate_slides_groq(article: dict) -> list[str] | None:
-    prompt = f"""You are a social media content writer for a global news page, similar to NowThis or BBC News on Instagram.
+    prompt = f"""You are a caveman social media writer for a global news page. You write like a caveman — short grunt-like words, primitive but funny English, very expressive. Think: "BIG FIRE HAPPEN. MAN LOSE CAVE. UGH."
+
 Write content for an 8-slide video Reel about this news story:
 
 HEADLINE: {article['title']}
@@ -523,16 +524,22 @@ DETAILS: {article['desc']}
 CATEGORY: {article['category']}
 
 INSTRUCTIONS:
-- Write in clear, punchy English — casual but credible, easy to read fast
-- KEEP EACH SLIDE SHORT (max 20 words) — it needs to be readable instantly in a video
-- Slide 1: Attention-grabbing hook headline — dramatic, curiosity-inducing
-- Slide 2: Simple explanation — what happened?
-- Slide 3: An important detail or number
-- Slide 4: Another key point or context
-- Slide 5: Why this matters to the average person
-- Slide 6: A quick takeaway or piece of advice
-- Slide 7: In short — one sentence summary
-- Slide 8: CTA — "Follow us for more news like this every day!"
+- Write ALL slides in caveman speech — short punchy grunts, broken English, dramatic and funny
+- Slide 1 (Hook): Dramatic caveman headline — all caps, curiosity-inducing. No character limit, this is the TITLE.
+- Slide 2 (What Happened?): Caveman explains event. MAX 120 CHARACTERS. No more.
+- Slide 3 (Key Details): Caveman share important number or detail. MAX 120 CHARACTERS. No more.
+- Slide 4 (Remember This): Caveman share context or extra fact. MAX 120 CHARACTERS. No more.
+- Slide 5 (Why It Matters): Caveman explain why people care. MAX 120 CHARACTERS. No more.
+- Slide 6 (Quick Take): Caveman give advice or takeaway. MAX 120 CHARACTERS. No more.
+- Slide 7 (In Short): One caveman sentence summary. MAX 120 CHARACTERS. No more.
+- Slide 8 (CTA): "FOLLOW FOR MORE NEWS! UGH!" — keep it caveman and fun.
+
+Caveman style examples:
+- "BIG WATER FLOOD VILLAGE. MANY CAVE GONE. UGH."
+- "CHIEF SAY NO MORE TRADE. OTHER TRIBE ANGRY NOW."
+- "TRIBE LOSE MUCH FOOD. WINTER COME SOON. BAD."
+
+IMPORTANT: For slides 2-7, count the characters carefully — MUST be 120 characters or less. Fill up to 120 characters, do not leave it too short.
 
 Format your answer as a JSON array ONLY (no other text):
 [
@@ -568,20 +575,28 @@ Format your answer as a JSON array ONLY (no other text):
     return None
 
 
+def _caveman_truncate(text: str, max_chars: int = 120) -> str:
+    """Truncate text to max_chars at a word boundary."""
+    if len(text) <= max_chars:
+        return text
+    truncated = text[:max_chars].rsplit(" ", 1)[0]
+    return truncated.rstrip(".,!?") + "."
+
+
 def generate_slides_fallback(article: dict) -> list[str]:
     title     = article["title"]
     desc      = article["desc"]
     sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", desc) if len(s.strip()) > 20]
     def gs(i, default): return sentences[i] if i < len(sentences) else default
     return [
-        title,
-        gs(0, "Here's what you need to know."),
-        gs(1, "This is one of today's biggest stories."),
-        gs(2, "People around the world are following this closely."),
-        "This could affect more people than you'd expect.",
-        "Stay tuned — follow official updates as the story develops.",
-        f"One of today's top stories in {article['category']}.",
-        f"Follow {PAGE_NAME} for more news like this every day! 🔥",
+        title,  # Slide 1: Title — no character limit
+        _caveman_truncate(f"UGH! {gs(0, 'BIG THING HAPPEN TODAY. MANY PEOPLE TALK ABOUT. CAVE SHAKE.')}"),
+        _caveman_truncate(f"IMPORTANT DETAIL: {gs(1, 'THIS BIG STORY. MANY TRIBE AFFECTED. NUMBER VERY BIG. UGH!')}"),
+        _caveman_truncate(f"ALSO KNOW THIS: {gs(2, 'OTHER CAVE-PEOPLE FOLLOW CLOSE. BIG CHIEF SPEAK. TRIBE LISTEN.')}"),
+        _caveman_truncate("THIS MATTER BECAUSE IT AFFECT YOUR CAVE TOO. IF BIG THING HAPPEN, YOUR FIRE GO OUT. VERY BAD."),
+        _caveman_truncate("CAVEMAN SAY: WATCH CLOSELY. FOLLOW UPDATE. SHARE WITH CAVE FRIEND. KNOWLEDGE IS BIG ROCK."),
+        _caveman_truncate(f"IN SHORT: BIG EVENT HAPPEN IN {article['category']}. WORLD CHANGE. CAVEMAN MUST KNOW."),
+        f"FOLLOW {PAGE_NAME} FOR MORE NEWS! UGH! 🔥🦴",
     ]
 
 
@@ -591,9 +606,13 @@ def generate_slides(article: dict) -> list[str]:
         texts = generate_slides_groq(article)
         if texts and len(texts) >= 6:
             while len(texts) < 8:
-                texts.append(f"Follow {PAGE_NAME} for more news like this! 🔥")
-            return texts[:8]
-    print("  ✍️  Using text extraction fallback…")
+                texts.append(f"FOLLOW {PAGE_NAME} FOR MORE NEWS! UGH! 🔥🦴")
+            texts = texts[:8]
+            # Enforce 120-char cap on content slides (2–7), skip title (0) and CTA (7)
+            for i in range(1, 7):
+                texts[i] = _caveman_truncate(texts[i], max_chars=120)
+            return texts
+    print("  ✍️  Using caveman fallback…")
     return generate_slides_fallback(article)
 
 
@@ -609,14 +628,9 @@ def draw_rounded_rect(draw, x0, y0, x1, y1, r, fill):
     draw.ellipse([x1 - 2*r, y1 - 2*r, x1, y1], fill=fill)
 
 
-def draw_text_shadow(draw, xy, text, font, fill, shadow_offset=4, shadow_color=(0, 0, 0, 220)):
-    """
-    Draws text with a thick, soft shadow to ensure readability over clear images.
-    """
-    x, y = xy
-    # Draw multiple offsets for a thicker shadow
-    for dx, dy in [(-2, -2), (2, -2), (-2, 2), (2, 2), (0, -3), (0, 3), (-3, 0), (3, 0)]:
-        draw.text((x + dx, y + dy), text, font=font, fill=shadow_color)
+def draw_text_shadow(draw, xy, text, font, fill, shadow_offset=3, shadow_color=(0, 0, 0, 180)):
+    sx, sy = xy[0] + shadow_offset, xy[1] + shadow_offset
+    draw.text((sx, sy), text, font=font, fill=shadow_color)
     draw.text(xy, text, font=font, fill=fill)
 
 
@@ -685,6 +699,7 @@ def create_blurred_bg_and_fg(img: Image.Image, target_w: int, target_h: int):
     new_w = int(src_w * scale)
     new_h = int(src_h * scale)
     fg = img.resize((new_w, new_h), Image.LANCZOS)
+    fg = fg.filter(ImageFilter.UnsharpMask(radius=1.2, percent=120, threshold=3))
     
     return bg, fg, new_w, new_h
 
@@ -735,19 +750,21 @@ def create_slide(text: str, idx: int, total: int, category: str,
             bg_photo, fg_photo, fg_w, fg_h = create_blurred_bg_and_fg(current_photo, IMG_W, IMG_H)
             img.paste(bg_photo, (0, 0))
             
-            # Paste sharp foreground image at CENTER, horizontally and vertically centered
+            # Paste sharp foreground image at top, horizontally centered
             paste_x = (IMG_W - fg_w) // 2
-            paste_y = (IMG_H - fg_h) // 2
+            paste_y = 100
             img.paste(fg_photo, (paste_x, paste_y))
             
-            # NO CENTRAL GRADIENT. We only apply a slight fade at the very bottom 
-            # for the branding bar so it doesn't clash with the image.
+            # Apply clean gradient overlay for text readability
             overlay = Image.new("RGBA", (IMG_W, IMG_H), (0, 0, 0, 0))
             od = ImageDraw.Draw(overlay)
-            start_fade = IMG_H - 250
-            for y in range(start_fade, IMG_H):
-                progress = (y - start_fade) / 250
-                alpha = int(200 * progress)
+            for y in range(IMG_H):
+                # Base gradient from top to bottom
+                alpha = int(230 * (y / IMG_H) ** 1.2)
+                # Add extra darkness in the center (700px to 1100px) where text sits
+                if 700 < y < 1100:
+                    alpha += 70
+                alpha = min(255, alpha)
                 od.line([(0, y), (IMG_W, y)], fill=(0, 0, 0, alpha))
             img_rgba = img.convert("RGBA")
             img_rgba.alpha_composite(overlay)
@@ -802,7 +819,7 @@ def create_slide(text: str, idx: int, total: int, category: str,
                 bx = draw.textbbox((0, 0), line_txt, font=font_h)[2]
                 x  = (IMG_W - bx) // 2
                 draw_text_shadow(draw, (x, y), line_txt, font_h, line_col,
-                                 shadow_offset=5, shadow_color=(0, 0, 0, 230))
+                                 shadow_offset=5, shadow_color=(0, 0, 0, 220))
                 y += lh
 
             # Thin accent divider line below text
@@ -837,7 +854,7 @@ def create_slide(text: str, idx: int, total: int, category: str,
                 bx = draw.textbbox((0, 0), line, font=font)[2]
                 x  = (IMG_W - bx) // 2
                 draw_text_shadow(draw, (x, ty), line, font, colour,
-                                 shadow_offset=4, shadow_color=(0, 0, 0, 220))
+                                 shadow_offset=4, shadow_color=(0, 0, 0, 200))
                 ty += lh
 
     # ── CTA SLIDE
