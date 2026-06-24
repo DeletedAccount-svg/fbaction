@@ -515,8 +515,7 @@ def fetch_all_article_images(article: dict) -> list[Image.Image]:
 # SLIDE CONTENT — Groq or fallback (8 slides for Reel)
 # ─────────────────────────────────────────────────────────────────────────────
 def generate_slides_groq(article: dict) -> list[str] | None:
-    prompt = f"""You are a caveman social media writer for a global news page. You write like a caveman — short grunt-like words, primitive but funny English, very expressive. Think: "BIG FIRE HAPPEN. MAN LOSE CAVE. UGH."
-
+    prompt = f"""You are a professional social media content writer for a global news page, similar to NowThis or BBC News on Instagram.
 Write content for an 8-slide video Reel about this news story:
 
 HEADLINE: {article['title']}
@@ -524,22 +523,17 @@ DETAILS: {article['desc']}
 CATEGORY: {article['category']}
 
 INSTRUCTIONS:
-- Write ALL slides in caveman speech — short punchy grunts, broken English, dramatic and funny
-- Slide 1 (Hook): Dramatic caveman headline — all caps, curiosity-inducing. No character limit, this is the TITLE.
-- Slide 2 (What Happened?): Caveman explains event. MAX 120 CHARACTERS. No more.
-- Slide 3 (Key Details): Caveman share important number or detail. MAX 120 CHARACTERS. No more.
-- Slide 4 (Remember This): Caveman share context or extra fact. MAX 120 CHARACTERS. No more.
-- Slide 5 (Why It Matters): Caveman explain why people care. MAX 120 CHARACTERS. No more.
-- Slide 6 (Quick Take): Caveman give advice or takeaway. MAX 120 CHARACTERS. No more.
-- Slide 7 (In Short): One caveman sentence summary. MAX 120 CHARACTERS. No more.
-- Slide 8 (CTA): "FOLLOW FOR MORE NEWS! UGH!" — keep it caveman and fun.
+- Write in clear, punchy, professional English — credible, easy to read fast
+- Slide 1 (Hook): Attention-grabbing headline — dramatic, curiosity-inducing. No character limit, this is the TITLE.
+- Slide 2 (What Happened?): Simple explanation of the event. STRICTLY MAX 120 CHARACTERS (count carefully).
+- Slide 3 (Key Details): An important detail or number. STRICTLY MAX 120 CHARACTERS (count carefully).
+- Slide 4 (Remember This): Another key point or context. STRICTLY MAX 120 CHARACTERS (count carefully).
+- Slide 5 (Why It Matters): Why this matters to the average person. STRICTLY MAX 120 CHARACTERS (count carefully).
+- Slide 6 (Quick Take): A quick takeaway or piece of advice. STRICTLY MAX 120 CHARACTERS (count carefully).
+- Slide 7 (In Short): One sentence summary. STRICTLY MAX 120 CHARACTERS (count carefully).
+- Slide 8 (CTA): "Follow us for more news like this every day!" — no character limit.
 
-Caveman style examples:
-- "BIG WATER FLOOD VILLAGE. MANY CAVE GONE. UGH."
-- "CHIEF SAY NO MORE TRADE. OTHER TRIBE ANGRY NOW."
-- "TRIBE LOSE MUCH FOOD. WINTER COME SOON. BAD."
-
-IMPORTANT: For slides 2-7, count the characters carefully — MUST be 120 characters or less. Fill up to 120 characters, do not leave it too short.
+IMPORTANT: For slides 2–7, each text MUST be 120 characters or fewer. Use every character — aim to be as informative as possible within the limit.
 
 Format your answer as a JSON array ONLY (no other text):
 [
@@ -575,7 +569,7 @@ Format your answer as a JSON array ONLY (no other text):
     return None
 
 
-def _caveman_truncate(text: str, max_chars: int = 120) -> str:
+def _truncate(text: str, max_chars: int = 120) -> str:
     """Truncate text to max_chars at a word boundary."""
     if len(text) <= max_chars:
         return text
@@ -590,13 +584,13 @@ def generate_slides_fallback(article: dict) -> list[str]:
     def gs(i, default): return sentences[i] if i < len(sentences) else default
     return [
         title,  # Slide 1: Title — no character limit
-        _caveman_truncate(f"UGH! {gs(0, 'BIG THING HAPPEN TODAY. MANY PEOPLE TALK ABOUT. CAVE SHAKE.')}"),
-        _caveman_truncate(f"IMPORTANT DETAIL: {gs(1, 'THIS BIG STORY. MANY TRIBE AFFECTED. NUMBER VERY BIG. UGH!')}"),
-        _caveman_truncate(f"ALSO KNOW THIS: {gs(2, 'OTHER CAVE-PEOPLE FOLLOW CLOSE. BIG CHIEF SPEAK. TRIBE LISTEN.')}"),
-        _caveman_truncate("THIS MATTER BECAUSE IT AFFECT YOUR CAVE TOO. IF BIG THING HAPPEN, YOUR FIRE GO OUT. VERY BAD."),
-        _caveman_truncate("CAVEMAN SAY: WATCH CLOSELY. FOLLOW UPDATE. SHARE WITH CAVE FRIEND. KNOWLEDGE IS BIG ROCK."),
-        _caveman_truncate(f"IN SHORT: BIG EVENT HAPPEN IN {article['category']}. WORLD CHANGE. CAVEMAN MUST KNOW."),
-        f"FOLLOW {PAGE_NAME} FOR MORE NEWS! UGH! 🔥🦴",
+        _truncate(gs(0, "Here's what you need to know about this developing story.")),
+        _truncate(gs(1, "This is one of today's most significant stories making global headlines.")),
+        _truncate(gs(2, "People around the world are closely monitoring how this situation unfolds.")),
+        _truncate("This could have a wider impact than expected — affecting economies, people, and policy."),
+        _truncate("Stay informed and follow official updates as more details emerge on this story."),
+        _truncate(f"One of today's top stories in {article['category']} — and it's worth your attention."),
+        f"Follow {PAGE_NAME} for more news like this every day! 🔥",
     ]
 
 
@@ -610,9 +604,9 @@ def generate_slides(article: dict) -> list[str]:
             texts = texts[:8]
             # Enforce 120-char cap on content slides (2–7), skip title (0) and CTA (7)
             for i in range(1, 7):
-                texts[i] = _caveman_truncate(texts[i], max_chars=120)
+                texts[i] = _truncate(texts[i], max_chars=120)
             return texts
-    print("  ✍️  Using caveman fallback…")
+    print("  ✍️  Using text extraction fallback…")
     return generate_slides_fallback(article)
 
 
